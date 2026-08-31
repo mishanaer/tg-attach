@@ -49,7 +49,7 @@ final class AttachmentSheetController: UIViewController {
     private var isDismissing = false
 
     private let photoItemCount = 40
-    private let headerHeight: CGFloat = 56.0
+    private let headerHeight: CGFloat = 65.0 // measured 66.3pt to the first grid row in production
     private let capsuleHeight: CGFloat = 62.0    // AttachmentPanel glassPanelHeight
     private let capsuleSideInset: CGFloat = 20.0 // glassPanelSideInset
     private let topCornerRadius: CGFloat = 38.0  // AttachmentContainer glass top radius
@@ -121,7 +121,7 @@ final class AttachmentSheetController: UIViewController {
 
         closeGlass.isUserInteractionEnabled = false
         closeButton.addSubview(closeGlass)
-        closeIcon.image = UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+        closeIcon.image = UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))
         closeIcon.tintColor = .black
         closeIcon.contentMode = .center
         closeGlass.contentView.addSubview(closeIcon)
@@ -164,8 +164,10 @@ final class AttachmentSheetController: UIViewController {
     private func setupTabCapsule() {
         sheetContentView.addSubview(tabCapsule)
         // Selection "lens" substitute behind the selected tab: LiquidLensView
-        // (private liquid glass) -> clear glass pill, radius 28 (AP:2549).
+        // (private liquid glass) -> clear glass pill, radius 28 (AP:2549),
+        // dimmed to the measured production tint (~-30 luminance vs capsule).
         lensView.isUserInteractionEnabled = false
+        lensView.contentView.backgroundColor = UIColor(white: 0.0, alpha: 0.10)
         tabCapsule.contentView.addSubview(lensView)
 
         // Production tab set from the reference capture. Wallet is an attach
@@ -261,13 +263,13 @@ final class AttachmentSheetController: UIViewController {
 
         pillView.frame = CGRect(x: floor((width - 36.0) / 2.0), y: 5.0, width: 36.0, height: 5.0)
         titleLabel.sizeToFit()
-        titleLabel.frame.origin = CGPoint(x: floor((width - titleLabel.bounds.width) / 2.0), y: 22.0)
+        titleLabel.frame.origin = CGPoint(x: floor((width - titleLabel.bounds.width) / 2.0), y: 26.0)
         if let chevron = titleChevron.image {
             titleChevron.frame = CGRect(x: titleLabel.frame.maxX + 3.0,
                                         y: floor(titleLabel.frame.midY - chevron.size.height / 2.0),
                                         width: chevron.size.width, height: chevron.size.height)
         }
-        closeButton.frame = CGRect(x: 16.0, y: floor(titleLabel.frame.midY - 20.0), width: 40.0, height: 40.0)
+        closeButton.frame = CGRect(x: 20.0, y: floor(titleLabel.frame.midY - 22.0), width: 44.0, height: 44.0)
         closeGlass.frame = closeButton.bounds
         closeIcon.frame = closeButton.bounds
 
@@ -275,10 +277,12 @@ final class AttachmentSheetController: UIViewController {
         collectionView.frame = CGRect(x: 0, y: 0, width: width, height: height)
         collectionView.contentInset = UIEdgeInsets(top: headerHeight + 1.0, left: 0, bottom: safeBottom + 8.0 + capsuleHeight + 8.0, right: 0)
 
-        // Floating glass capsule, 8pt above the safe bottom (AC phone panelOffset).
+        // Floating glass capsule: panelY = height - panelHeight - panelOffset,
+        // phone panelOffset = 8 (AttachmentController.swift:1475, 1493-1495).
+        // No safe-area part: the home indicator floats over the glass.
         let capsuleWidth = width - capsuleSideInset * 2.0
         tabCapsule.frame = CGRect(x: capsuleSideInset,
-                                  y: height - safeBottom - 8.0 - capsuleHeight,
+                                  y: height - 8.0 - capsuleHeight,
                                   width: capsuleWidth,
                                   height: capsuleHeight)
 
