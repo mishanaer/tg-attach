@@ -53,6 +53,7 @@ final class AttachmentSheetController: UIViewController {
     private var tabFrames: [CGRect] = []
     // Selection order = badge numbers (MediaPickerGridItem counter content).
     private var selectedItems: [Int] = []
+    private var isSelectingMode = false
     private let captionPlaceholder = UILabel()
     private let sendCircle = UIView()
     private let sendIcon = UIImageView()
@@ -247,8 +248,10 @@ final class AttachmentSheetController: UIViewController {
         captionPlaceholder.alpha = 0.0
         tabCapsule.contentView.addSubview(captionPlaceholder)
 
+        // Send is the composer's pill: 40x34 radius 17 in a 46x40 slot flush
+        // with the field's trailing edge (ChatTextInputPanelNode metrics).
         sendCircle.backgroundColor = Theme.sendPill
-        sendCircle.layer.cornerRadius = 23.0
+        sendCircle.layer.cornerRadius = 17.0
         sendCircle.alpha = 0.0
         tabCapsule.contentView.addSubview(sendCircle)
         sendIcon.image = UIImage(named: "TGSendIcon")
@@ -260,16 +263,23 @@ final class AttachmentSheetController: UIViewController {
         tabCapsule.contentView.addGestureRecognizer(tap)
     }
 
-    /// Crossfade between the tab row and the caption/send pair — the panel's
-    /// isSelecting switch (AttachmentPanel.update(isSelecting:)).
+    /// The panel's isSelecting switch (AttachmentPanel.update): the 62pt tab
+    /// capsule morphs into the composer text panel — width - 16*2, height 40,
+    /// radius min(20, h/2) — with the send pill on its trailing edge. The
+    /// selection toggle relayout runs on the panel's 0.4s spring
+    /// (AttachmentPanel.swift:1927).
     private func updateSelectionPanel() {
         let selecting = !selectedItems.isEmpty
-        UIView.animate(withDuration: 0.2, delay: 0.0, options: [.curveEaseInOut]) {
+        guard selecting != isSelectingMode else { return }
+        isSelectingMode = selecting
+        tabCapsule.overrideCornerRadius = selecting ? 20.0 : nil
+        UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
             for view in [self.tabsBaseRow, self.tabsSelectedRow, self.lensView, self.lensDim] {
                 view.alpha = selecting ? 0.0 : 1.0
             }
             self.captionPlaceholder.alpha = selecting ? 1.0 : 0.0
             self.sendCircle.alpha = selecting ? 1.0 : 0.0
+            self.layoutSheetContent()
         }
     }
 
@@ -346,11 +356,15 @@ final class AttachmentSheetController: UIViewController {
         // Floating glass capsule: panelY = height - panelHeight - panelOffset,
         // phone panelOffset = 8 (AttachmentController.swift:1475, 1493-1495).
         // No safe-area part: the home indicator floats over the glass.
-        let capsuleWidth = width - capsuleSideInset * 2.0
-        tabCapsule.frame = CGRect(x: capsuleSideInset,
-                                  y: height - 8.0 - capsuleHeight,
+        // Selecting: textPanelSideInset 16, composer field height 40
+        // (AttachmentPanel.swift:2496, 2579-2580).
+        let sideInset = isSelectingMode ? 16.0 : capsuleSideInset
+        let panelHeight = isSelectingMode ? 40.0 : capsuleHeight
+        let capsuleWidth = width - sideInset * 2.0
+        tabCapsule.frame = CGRect(x: sideInset,
+                                  y: height - 8.0 - panelHeight,
                                   width: capsuleWidth,
-                                  height: capsuleHeight)
+                                  height: panelHeight)
 
         // Tab buttons: 72x62 at y=-3; screen-coord minX = 23 + i*pitch —
         // AttachmentPanel.swift:2021: (width - sideInset*2 - buttonWidth) / (count-1).
@@ -366,11 +380,13 @@ final class AttachmentSheetController: UIViewController {
                 button.frame = tabFrames[button.tag - 100]
             }
         }
+        // Composer text metrics: leading 12, send pill 40x34 inset 3 in a
+        // 46x40 slot at the trailing edge (ChatTextInputPanelNode).
         captionPlaceholder.sizeToFit()
-        captionPlaceholder.frame.origin = CGPoint(x: 20.0,
-                                                  y: floor((capsuleHeight - captionPlaceholder.bounds.height) / 2.0))
-        sendCircle.frame = CGRect(x: capsuleWidth - 46.0 - 8.0,
-                                  y: floor((capsuleHeight - 46.0) / 2.0), width: 46.0, height: 46.0)
+        captionPlaceholder.frame.origin = CGPoint(x: 12.0,
+                                                  y: floor((panelHeight - captionPlaceholder.bounds.height) / 2.0))
+        sendCircle.frame = CGRect(x: capsuleWidth - 46.0 + 3.0,
+                                  y: panelHeight - 40.0 + 3.0, width: 40.0, height: 34.0)
         sendIcon.frame = sendCircle.bounds
 
         let selectedFrame = tabFrames[selectedTabIndex].insetBy(dx: 3.0, dy: 3.0)

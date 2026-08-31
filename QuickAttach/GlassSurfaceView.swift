@@ -59,11 +59,17 @@ final class GlassSurfaceView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Runtime override of the fixed corner radius (the attachment panel
+    /// morphs 31 -> 20 when it switches into its selecting mode).
+    var overrideCornerRadius: CGFloat? {
+        didSet { setNeedsLayout() }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         effectView.frame = bounds
         if forceLegacy {
-            effectView.layer.cornerRadius = fixedCornerRadius ?? bounds.height / 2
+            effectView.layer.cornerRadius = overrideCornerRadius ?? fixedCornerRadius ?? bounds.height / 2
             legacyFillView.frame = effectView.contentView.bounds
         } else if #unavailable(iOS 26.0) {
             effectView.layer.cornerRadius = fixedCornerRadius ?? bounds.height / 2
