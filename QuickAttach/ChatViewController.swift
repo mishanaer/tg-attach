@@ -19,7 +19,6 @@ final class ChatViewController: UIViewController {
     private var messages: [Message] = []
     private var overlay: QuickAttachOverlayView?
     private var attachmentSheet: AttachmentSheetController?
-    private var pendingSheetImage: UIImage?
 
     // MARK: - Lifecycle
 
@@ -499,18 +498,19 @@ final class ChatViewController: UIViewController {
             guard let self else { return }
             let sourceRect = self.inputPanel.attachButton.convert(self.inputPanel.attachButton.bounds, to: self.view)
             let sheet = AttachmentSheetController(images: RecentPhotosProvider.shared.cachedThumbnails, sourceRect: sourceRect)
-            sheet.onPickImage = { [weak self] image in
+            // Send posts the selection straight to the chat, the way the
+            // media picker sends (not via the composer chip).
+            sheet.onSendImages = { [weak self] images in
                 guard let self else { return }
-                self.pendingSheetImage = image
-                _ = self.inputPanel.prepareAttachmentSlot(in: self.view, image: image)
+                for image in images {
+                    self.messages.append(Message(content: .photo(image, caption: nil), isOutgoing: true, date: Date()))
+                }
+                self.tableView.reloadData()
+                self.scrollToBottom(animated: true)
             }
             sheet.onDismissed = { [weak self] in
                 guard let self else { return }
                 self.inputPanel.attachButton.alpha = 1.0
-                if let image = self.pendingSheetImage {
-                    self.pendingSheetImage = nil
-                    self.inputPanel.revealAttachment(image)
-                }
                 self.attachmentSheet = nil
             }
             self.addChild(sheet)

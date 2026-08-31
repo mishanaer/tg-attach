@@ -12,7 +12,7 @@ import UIKit
 /// DeviceMetrics corner table -> _displayCornerRadius KVC.
 final class AttachmentSheetController: UIViewController {
 
-    var onPickImage: ((UIImage) -> Void)?
+    var onSendImages: (([UIImage]) -> Void)?
     var onDismissed: (() -> Void)?
 
     private let images: [UIImage]
@@ -51,6 +51,11 @@ final class AttachmentSheetController: UIViewController {
     private let selectedRowMask = UIView()
     private var selectedTabIndex = 0
     private var tabFrames: [CGRect] = []
+    // Selection order = badge numbers (MediaPickerGridItem counter content).
+    private var selectedItems: [Int] = []
+    private let captionPlaceholder = UILabel()
+    private let sendCircle = UIView()
+    private let sendIcon = UIImageView()
 
     private enum SheetState { case collapsed, expanded }
     private var state: SheetState = .collapsed
@@ -233,8 +238,47 @@ final class AttachmentSheetController: UIViewController {
             }
         }
 
+        // Selecting mode (AttachmentPanel isSelecting): the tab row gives way
+        // to a caption field + send. The field is a non-editable placeholder
+        // here — the full ChatTextInputPanelNode is out of the demo's scope.
+        captionPlaceholder.text = "Add a caption..."
+        captionPlaceholder.font = .systemFont(ofSize: 17)
+        captionPlaceholder.textColor = Theme.inputPlaceholder
+        captionPlaceholder.alpha = 0.0
+        tabCapsule.contentView.addSubview(captionPlaceholder)
+
+        sendCircle.backgroundColor = Theme.sendPill
+        sendCircle.layer.cornerRadius = 23.0
+        sendCircle.alpha = 0.0
+        tabCapsule.contentView.addSubview(sendCircle)
+        sendIcon.image = UIImage(named: "TGSendIcon")
+        sendIcon.tintColor = Theme.sendIcon
+        sendIcon.contentMode = .center
+        sendCircle.addSubview(sendIcon)
+
         let tap = UITapGestureRecognizer(target: self, action: #selector(tabCapsuleTapped(_:)))
         tabCapsule.contentView.addGestureRecognizer(tap)
+    }
+
+    /// Crossfade between the tab row and the caption/send pair — the panel's
+    /// isSelecting switch (AttachmentPanel.update(isSelecting:)).
+    private func updateSelectionPanel() {
+        let selecting = !selectedItems.isEmpty
+        UIView.animate(withDuration: 0.2, delay: 0.0, options: [.curveEaseInOut]) {
+            for view in [self.tabsBaseRow, self.tabsSelectedRow, self.lensView, self.lensDim] {
+                view.alpha = selecting ? 0.0 : 1.0
+            }
+            self.captionPlaceholder.alpha = selecting ? 1.0 : 0.0
+            self.sendCircle.alpha = selecting ? 1.0 : 0.0
+        }
+    }
+
+    private func performSend() {
+        guard !selectedItems.isEmpty else { return }
+        let picked = selectedItems.map { images[($0 - 1) % images.count] }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        onSendImages?(picked)
+        animateOut(velocity: 0) {}
     }
 
     /// Tab switch: the lens slides to the tapped tab with the panel's spring
@@ -242,6 +286,12 @@ final class AttachmentSheetController: UIViewController {
     /// of scope for the demo; the switcher itself is the original interaction.
     @objc private func tabCapsuleTapped(_ gesture: UITapGestureRecognizer) {
         let location = gesture.location(in: tabCapsule.contentView)
+        if !selectedItems.isEmpty {
+            if sendCircle.frame.insetBy(dx: -12, dy: -12).contains(location) {
+                performSend()
+            }
+            return
+        }
         guard !tabFrames.isEmpty else { return }
         var nearest = 0
         var bestDistance = CGFloat.greatestFiniteMagnitude
@@ -316,6 +366,13 @@ final class AttachmentSheetController: UIViewController {
                 button.frame = tabFrames[button.tag - 100]
             }
         }
+        captionPlaceholder.sizeToFit()
+        captionPlaceholder.frame.origin = CGPoint(x: 20.0,
+                                                  y: floor((capsuleHeight - captionPlaceholder.bounds.height) / 2.0))
+        sendCircle.frame = CGRect(x: capsuleWidth - 46.0 - 8.0,
+                                  y: floor((capsuleHeight - 46.0) / 2.0), width: 46.0, height: 46.0)
+        sendIcon.frame = sendCircle.bounds
+
         let selectedFrame = tabFrames[selectedTabIndex].insetBy(dx: 3.0, dy: 3.0)
         lensView.frame = selectedFrame
         lensDim.frame = selectedFrame
@@ -455,15 +512,7 @@ final class AttachmentSheetController: UIViewController {
     // MARK: - Snap / drag (AttachmentContainer.swift:371-437)
 
     @objc private func dimTapped() {
-        pickAndDismiss(image: nil, velocity: 0)
-    }
-
-    private func pickAndDismiss(image: UIImage?, velocity: CGFloat) {
-        if let image {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            onPickImage?(image)
-        }
-        animateOut(velocity: velocity) {}
+        animateOut(velocity: 0) {}
     }
 
     private func snap(to newState: SheetState, velocity: CGFloat) {
@@ -567,12 +616,26 @@ extension AttachmentSheetController: UICollectionViewDataSource, UICollectionVie
         }
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "photo", for: indexPath) as! SheetPhotoCell
         cell.imageView.image = images[(indexPath.item - 1) % images.count]
+        cell.setSelectionIndex(selectedItems.firstIndex(of: indexPath.item).map { $0 + 1 }, animated: false)
         return cell
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard indexPath.item > 0 else { return } // camera tile: no-op in the demo
-        pickAndDismiss(image: images[(indexPath.item - 1) % images.count], velocity: 0)
+        if let position = selectedItems.firstIndex(of: indexPath.item) {
+            selectedItems.remove(at: position)
+        } else {
+            selectedItems.append(indexPath.item)
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+        // Renumber every visible badge; only the tapped cell animates
+        // (MediaPickerGridItem.updateSelectionState).
+        for case let cell as SheetPhotoCell in collectionView.visibleCells {
+            guard let item = collectionView.indexPath(for: cell)?.item else { continue }
+            cell.setSelectionIndex(selectedItems.firstIndex(of: item).map { $0 + 1 },
+                                   animated: item == indexPath.item)
+        }
+        updateSelectionPanel()
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -650,6 +713,11 @@ private final class MediaGridLayout: UICollectionViewLayout {
 private final class SheetPhotoCell: UICollectionViewCell {
     let imageView = UIImageView()
     private let ringView = UIImageView(image: AttachmentSheetController.selectionRingImage)
+    // Selected state: accent-filled 29pt circle with the selection ordinal,
+    // spring-scaled in from 0.2 (InteractiveCheckNode counter content,
+    // MediaPickerGridItem.swift:246-262, 822-823).
+    private let badgeView = UIView()
+    private let badgeLabel = UILabel()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -657,15 +725,47 @@ private final class SheetPhotoCell: UICollectionViewCell {
         contentView.clipsToBounds = true
         imageView.contentMode = .scaleAspectFill
         contentView.addSubview(imageView)
+
+        badgeView.backgroundColor = Theme.accent
+        badgeView.layer.cornerRadius = 14.5
+        badgeView.alpha = 0.0
+        badgeLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        badgeLabel.textColor = .white
+        badgeLabel.textAlignment = .center
+        badgeView.addSubview(badgeLabel)
+        contentView.addSubview(badgeView)
         contentView.addSubview(ringView)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    func setSelectionIndex(_ index: Int?, animated: Bool) {
+        if let index {
+            badgeLabel.text = "\(index)"
+            guard badgeView.alpha < 1.0 else { return }
+            badgeView.alpha = 1.0
+            if animated {
+                badgeView.transform = CGAffineTransform(scaleX: 0.2, y: 0.2)
+                UIView.animate(withDuration: 0.5, delay: 0.0, usingSpringWithDamping: 0.6, initialSpringVelocity: 0.0) {
+                    self.badgeView.transform = .identity
+                }
+            }
+        } else if badgeView.alpha > 0.0 {
+            if animated {
+                UIView.animate(withDuration: 0.2) { self.badgeView.alpha = 0.0 }
+            } else {
+                badgeView.alpha = 0.0
+            }
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         imageView.frame = contentView.bounds
-        ringView.frame = CGRect(x: contentView.bounds.width - 29.0 - 3.0, y: 3.0, width: 29.0, height: 29.0)
+        let badgeFrame = CGRect(x: contentView.bounds.width - 29.0 - 3.0, y: 3.0, width: 29.0, height: 29.0)
+        ringView.frame = badgeFrame
+        badgeView.frame = badgeFrame
+        badgeLabel.frame = badgeView.bounds
     }
 }
 
