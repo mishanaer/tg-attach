@@ -579,7 +579,9 @@ def generate_project(bazel, arguments):
     if arguments.target is not None:
         target_name = arguments.target
     
-    call_executable(['killall', 'Xcode'], check_result=False)
+    preserve_xcode_lifecycle = os.getenv('TELEGRAM_SKIP_XCODE_LIFECYCLE') == '1'
+    if not preserve_xcode_lifecycle:
+        call_executable(['killall', 'Xcode'], check_result=False)
 
     xcodeproj_path = generate(
         build_environment=bazel_command_line.build_environment,
@@ -605,7 +607,8 @@ def generate_project(bazel, arguments):
             'Telegram/Telegram.LSP.json'
         ], check_result=True)
 
-    call_executable(['open', xcodeproj_path])
+    if not preserve_xcode_lifecycle:
+        call_executable(['open', xcodeproj_path])
 
 
 def resolve_watch_provisioning_profile(arguments, base_path):
@@ -679,6 +682,8 @@ def build(bazel, arguments):
     )
 
     bazel_command_line.set_configuration(arguments.configuration)
+    if arguments.disableProvisioningProfiles:
+        bazel_command_line.set_disable_provisioning_profiles()
     if arguments.embedWatchApp:
         if arguments.configuration in ('debug_arm64', 'release_arm64'):
             if arguments.watchApiId is None or arguments.watchApiHash is None:
@@ -1048,6 +1053,12 @@ if __name__ == '__main__':
         ],
         required=True,
         help='Build configuration'
+    )
+    buildParser.add_argument(
+        '--disableProvisioningProfiles',
+        action='store_true',
+        default=False,
+        help='Build for Simulator without provisioning profiles.'
     )
     buildParser.add_argument(
         '--enableParallelSwiftmoduleGeneration',
