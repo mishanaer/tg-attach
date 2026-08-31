@@ -6864,33 +6864,37 @@ private final class ChatListLocationContext {
         #elseif DEBUG && false
         networkState = .single(AccountNetworkState.connecting(proxy: nil))
         #else
-        let realNetworkState = context.account.networkState
-        networkState = Signal { subscriber in
-            let currentValue = Atomic<AccountNetworkState?>(value: nil)
-            let disposable = (realNetworkState
-            |> mapToSignal { value -> Signal<AccountNetworkState, NoError> in
-                let previousValue = currentValue.swap(value)
-                if let previousValue {
-                    switch value {
-                    case .waitingForNetwork, .connecting, .updating:
-                        if case .online = previousValue {
-                            return .single(value) |> delay(0.3, queue: .mainQueue())
-                        } else {
+        if QuickAttachDemo.isEnabled && context.account.peerId == QuickAttachDemo.accountPeerId {
+            networkState = .single(AccountNetworkState.online(proxy: nil))
+        } else {
+            let realNetworkState = context.account.networkState
+            networkState = Signal { subscriber in
+                let currentValue = Atomic<AccountNetworkState?>(value: nil)
+                let disposable = (realNetworkState
+                |> mapToSignal { value -> Signal<AccountNetworkState, NoError> in
+                    let previousValue = currentValue.swap(value)
+                    if let previousValue {
+                        switch value {
+                        case .waitingForNetwork, .connecting, .updating:
+                            if case .online = previousValue {
+                                return .single(value) |> delay(0.3, queue: .mainQueue())
+                            } else {
+                                return .single(value)
+                            }
+                        default:
                             return .single(value)
                         }
-                    default:
+                    } else {
                         return .single(value)
                     }
-                } else {
-                    return .single(value)
                 }
-            }
-            |> deliverOnMainQueue).start(next: { value in
-                subscriber.putNext(value)
-            })
-            
-            return ActionDisposable {
-                disposable.dispose()
+                |> deliverOnMainQueue).start(next: { value in
+                    subscriber.putNext(value)
+                })
+
+                return ActionDisposable {
+                    disposable.dispose()
+                }
             }
         }
         #endif

@@ -38,6 +38,84 @@ func switchToAuthorizedAccount(transaction: AccountManagerModifier<TelegramAccou
     transaction.removeAuth()
 }
 
+public enum QuickAttachDemo {
+    public static let accountPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(900000001))
+    public static let chatPeerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(900000002))
+
+    public static var isEnabled: Bool {
+        #if DEBUG
+        return Bundle.main.bundleIdentifier?.hasSuffix(".TelegramQuickAttach") == true
+        #else
+        return false
+        #endif
+    }
+
+    public static func authorizeLocalAccount(accountManager: AccountManager<TelegramAccountManagerTypes>, account: UnauthorizedAccount) -> Signal<Never, NoError> {
+        let accountPeer = TelegramUser(
+            id: self.accountPeerId,
+            accessHash: nil,
+            firstName: "Quick Attach",
+            lastName: nil,
+            username: nil,
+            phone: nil,
+            photo: [],
+            botInfo: nil,
+            restrictionInfo: nil,
+            flags: [],
+            emojiStatus: nil,
+            usernames: [],
+            storiesHidden: nil,
+            nameColor: nil,
+            backgroundEmojiId: nil,
+            profileColor: nil,
+            profileBackgroundEmojiId: nil,
+            subscriberCount: nil,
+            verificationIconFileId: nil
+        )
+        let chatPeer = TelegramUser(
+            id: self.chatPeerId,
+            accessHash: nil,
+            firstName: "Ksuscha",
+            lastName: nil,
+            username: nil,
+            phone: nil,
+            photo: [],
+            botInfo: nil,
+            restrictionInfo: nil,
+            flags: [],
+            emojiStatus: nil,
+            usernames: [],
+            storiesHidden: nil,
+            nameColor: .preset(.blue),
+            backgroundEmojiId: nil,
+            profileColor: nil,
+            profileBackgroundEmojiId: nil,
+            subscriberCount: nil,
+            verificationIconFileId: nil
+        )
+
+        return account.postbox.transaction { transaction -> Void in
+            transaction.updatePeersInternal([accountPeer, chatPeer], update: { _, updated in
+                return updated
+            })
+            initializedAppSettingsAfterLogin(transaction: transaction, appVersion: account.networkArguments.appVersion, syncContacts: false)
+            transaction.setState(AuthorizedAccountState(
+                isTestingEnvironment: account.testingEnvironment,
+                masterDatacenterId: account.masterDatacenterId,
+                peerId: self.accountPeerId,
+                state: nil,
+                invalidatedChannels: []
+            ))
+        }
+        |> mapToSignal { _ -> Signal<Void, NoError> in
+            return accountManager.transaction { transaction -> Void in
+                switchToAuthorizedAccount(transaction: transaction, account: account, isSupportUser: false)
+            }
+        }
+        |> ignoreValues
+    }
+}
+
 private struct Regex {
     let pattern: String
     let options: NSRegularExpression.Options!

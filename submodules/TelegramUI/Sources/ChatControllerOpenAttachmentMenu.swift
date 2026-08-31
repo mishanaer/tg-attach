@@ -422,6 +422,14 @@ extension ChatControllerImpl {
                 let currentFilesController = Atomic<AttachmentFileControllerImpl?>(value: nil)
                 let currentAudioController = Atomic<AttachmentFileControllerImpl?>(value: nil)
                 let currentLocationController = Atomic<LocationPickerController?>(value: nil)
+
+                let useEmptySecondaryAttachmentTabs: Bool
+                switch subject {
+                case .default:
+                    useEmptySecondaryAttachmentTabs = true
+                default:
+                    useEmptySecondaryAttachmentTabs = false
+                }
                 
                 strongSelf.canReadHistory.set(false)
                 
@@ -447,6 +455,11 @@ extension ChatControllerImpl {
                 }
                 attachmentController.requestController = { [weak self, weak attachmentController] type, completion in
                     guard let strongSelf = self else {
+                        return true
+                    }
+                    if useEmptySecondaryAttachmentTabs, type != .gallery {
+                        strongSelf.controllerNavigationDisposable.set(nil)
+                        completion(EmptyAttachmentScreen(presentationData: strongSelf.presentationData), nil)
                         return true
                     }
                     switch type {

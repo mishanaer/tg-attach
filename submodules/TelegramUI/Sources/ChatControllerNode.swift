@@ -733,6 +733,15 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 }
                 source = .custom(messages: messages, messageId: MessageId(peerId: PeerId(0), namespace: 0, id: 0), quote: nil, isSavedMusic: false, canReorder: false, loadMore: nil)
             }
+        } else if QuickAttachDemo.isEnabled && context.account.peerId == QuickAttachDemo.accountPeerId, let peerId = chatLocation.peerId, let messageIds = QuickAttachDemo.localDialogMessageIds(peerId: peerId) {
+            let messages = context.account.postbox.messagesAtIds(messageIds)
+            |> map { messages -> ([Message], Int32, Bool) in
+                let messages = messages.sorted(by: { lhs, rhs in
+                    return lhs.index > rhs.index
+                })
+                return (messages, Int32(messages.count), false)
+            }
+            source = .custom(messages: messages, messageId: messageIds.last, quote: nil, isSavedMusic: false, canReorder: false, loadMore: nil)
         } else if case .customChatContents = chatLocation {
             if case let .customChatContents(customChatContents) = subject {
                 source = .customView(historyView: customChatContents.historyView)

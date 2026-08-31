@@ -61,6 +61,11 @@ final class UnauthorizedApplicationContext {
         authorizationCompleted = { [weak self] in
             self?.authorizationCompleted = true
         }
+
+        if QuickAttachDemo.isEnabled {
+            self.authorizationCompleted = true
+            let _ = QuickAttachDemo.authorizeLocalAccount(accountManager: sharedContext.accountManager, account: account).start()
+        }
         
         self.isReady.set(self.rootController.ready.get())
         
@@ -260,6 +265,10 @@ final class AuthorizedApplicationContext {
             self.isReady.set(combinedReady)
         } else {
             self.isReady.set(.single(true))
+        }
+
+        if QuickAttachDemo.isEnabled && context.account.peerId == QuickAttachDemo.accountPeerId {
+            let _ = QuickAttachDemo.seedLocalDialogs(postbox: context.account.postbox).start()
         }
         
         let accountId = context.account.id

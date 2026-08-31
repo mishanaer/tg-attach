@@ -6898,7 +6898,13 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             }
         })
         
-        self.networkStateDisposable = (context.account.networkState |> deliverOnMainQueue).startStrict(next: { [weak self] state in
+        let chatNetworkState: Signal<AccountNetworkState, NoError>
+        if QuickAttachDemo.isEnabled && context.account.peerId == QuickAttachDemo.accountPeerId {
+            chatNetworkState = .single(AccountNetworkState.online(proxy: nil))
+        } else {
+            chatNetworkState = context.account.networkState
+        }
+        self.networkStateDisposable = (chatNetworkState |> deliverOnMainQueue).startStrict(next: { [weak self] state in
             if let strongSelf = self, case .standard(.default) = strongSelf.presentationInterfaceState.mode {
                 strongSelf.chatTitleView?.updateNetworkState(networkState: state, transition: .spring(duration: 0.4))
             }
