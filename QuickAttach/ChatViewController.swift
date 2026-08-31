@@ -18,6 +18,8 @@ final class ChatViewController: UIViewController {
 
     private var messages: [Message] = []
     private var overlay: QuickAttachOverlayView?
+    private var attachmentSheet: AttachmentSheetController?
+    private var pendingSheetImage: UIImage?
 
     // MARK: - Lifecycle
 
@@ -375,6 +377,9 @@ final class ChatViewController: UIViewController {
         inputPanel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(inputPanel)
 
+        inputPanel.onAttachTap = { [weak self] in
+            self?.presentFullAttachmentMenu()
+        }
         inputPanel.onSend = { [weak self] text, image in
             self?.sendMessage(text: text, image: image)
         }
@@ -476,6 +481,51 @@ final class ChatViewController: UIViewController {
         overlay.dismiss(selectedIndex: nil, targetRect: nil) { [weak self] in
             self?.overlay = nil
             self?.inputPanel.attachButton.alpha = 1.0
+        }
+    }
+
+    // MARK: - Full attachment menu (plain tap): Telegram's AttachmentUI sheet,
+    // glass-morphing out of the attach button.
+
+    private func presentFullAttachmentMenu() {
+        guard attachmentSheet == nil else { return }
+        // Telegram dismisses the keyboard first and delays presentation by 0.15s
+        // if it was up (ChatControllerOpenAttachmentMenu.swift:167-169, 1079-1085).
+        let keyboardWasUp = view.keyboardLayoutGuide.layoutFrame.minY
+            < view.bounds.height - view.safeAreaInsets.bottom - 1.0
+        view.endEditing(false)
+
+        let present = { [weak self] in
+            guard let self else { return }
+            let sourceRect = self.inputPanel.attachButton.convert(self.inputPanel.attachButton.bounds, to: self.view)
+            let sheet = AttachmentSheetController(images: RecentPhotosProvider.shared.cachedThumbnails, sourceRect: sourceRect)
+            sheet.onPickImage = { [weak self] image in
+                guard let self else { return }
+                self.pendingSheetImage = image
+                _ = self.inputPanel.prepareAttachmentSlot(in: self.view, image: image)
+            }
+            sheet.onDismissed = { [weak self] in
+                guard let self else { return }
+                self.inputPanel.attachButton.alpha = 1.0
+                if let image = self.pendingSheetImage {
+                    self.pendingSheetImage = nil
+                    self.inputPanel.revealAttachment(image)
+                }
+                self.attachmentSheet = nil
+            }
+            self.addChild(sheet)
+            sheet.view.frame = self.view.bounds
+            self.view.addSubview(sheet.view)
+            sheet.didMove(toParent: self)
+            self.attachmentSheet = sheet
+            // The sheet morphs out of the button; hide the source for the duration.
+            self.inputPanel.attachButton.alpha = 0.0
+            sheet.animateIn()
+        }
+        if keyboardWasUp {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: present)
+        } else {
+            present()
         }
     }
 

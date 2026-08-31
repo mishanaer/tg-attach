@@ -38,6 +38,7 @@ final class ChatInputPanelView: UIView {
 
     private(set) var attachedImage: UIImage?
 
+    var onAttachTap: (() -> Void)?
     var onSend: ((String?, UIImage?) -> Void)?
 
     private let chipSide: CGFloat = 64
@@ -60,7 +61,8 @@ final class ChatInputPanelView: UIView {
         attachIcon.translatesAutoresizingMaskIntoConstraints = false
         attachGlass.contentView.addSubview(attachIcon)
         attachButton.hitSlop = 4 // 48x48 touch area behind the 40pt circle
-        addSubview(attachButton) // plain tap removed: quick attach long-press only
+        attachButton.addTarget(self, action: #selector(attachTapped), for: .touchUpInside)
+        addSubview(attachButton)
 
         // Field: glass rounded rect, radius 20 (== capsule at the idle 40pt height,
         // stays 20 like the ChatGPT reference when expanded with an attachment).
@@ -341,6 +343,10 @@ final class ChatInputPanelView: UIView {
     }
 
     // MARK: - Actions
+
+    @objc private func attachTapped() {
+        onAttachTap?()
+    }
 
     @objc private func textChanged() {
         updateSendButton()
