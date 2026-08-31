@@ -12,16 +12,28 @@ final class GlassSurfaceView: UIView {
     let effectView = UIVisualEffectView()
     private let legacyFillView = UIView()
     private let fixedCornerRadius: CGFloat?
+    private let forceLegacy: Bool
     var contentView: UIView { effectView.contentView }
 
-    init(style: GlassStyle = .regular, interactive: Bool = false, cornerRadius: CGFloat? = nil) {
+    /// - Parameter tint: overrides the default material tint. Telegram's
+    ///   GlassBackgroundView takes a tint kind the same way (.panel is denser
+    ///   than the default surface tint); a flat fill inside contentView is
+    ///   swallowed by the iOS 26 glass pipeline, so the tint IS the lever.
+    /// - Parameter forceLegacy: render as blur + fill even on iOS 26. The
+    ///   native UIGlassEffect tone-maps its backdrop and caps how dense a
+    ///   surface can get; Telegram's own GlassBackgroundView (blur + fill)
+    ///   has no such ceiling, and the attachment panel visibly relies on it.
+    init(style: GlassStyle = .regular, interactive: Bool = false, cornerRadius: CGFloat? = nil, tint: UIColor? = nil, forceLegacy: Bool = false) {
         self.fixedCornerRadius = cornerRadius
+        self.forceLegacy = forceLegacy
         super.init(frame: .zero)
         addSubview(effectView)
-        if #available(iOS 26.0, *) {
+        if #available(iOS 26.0, *), !forceLegacy {
             let glass = UIGlassEffect(style: style == .clear ? .clear : .regular)
             glass.isInteractive = interactive
-            if style == .regular {
+            if let tint {
+                glass.tintColor = tint
+            } else if style == .regular {
                 glass.tintColor = UIColor(white: 1.0, alpha: 0.1) // GlassBackgroundComponent.swift:752-754
             }
             effectView.effect = glass
@@ -33,7 +45,7 @@ final class GlassSurfaceView: UIView {
         } else {
             effectView.effect = UIBlurEffect(style: .light)
             effectView.clipsToBounds = true
-            legacyFillView.backgroundColor = UIColor(white: 1.0, alpha: 0.7) // LegacyGlassView, :710-718
+            legacyFillView.backgroundColor = tint ?? UIColor(white: 1.0, alpha: 0.7) // LegacyGlassView, :710-718
             effectView.contentView.addSubview(legacyFillView)
             // Edge highlight + drop shadow per generateLegacyGlassImage/-ShadowImage.
             effectView.layer.borderWidth = 1.0
@@ -50,7 +62,10 @@ final class GlassSurfaceView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         effectView.frame = bounds
-        if #unavailable(iOS 26.0) {
+        if forceLegacy {
+            effectView.layer.cornerRadius = fixedCornerRadius ?? bounds.height / 2
+            legacyFillView.frame = effectView.contentView.bounds
+        } else if #unavailable(iOS 26.0) {
             effectView.layer.cornerRadius = fixedCornerRadius ?? bounds.height / 2
             legacyFillView.frame = effectView.contentView.bounds
         }

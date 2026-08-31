@@ -32,8 +32,17 @@ final class AttachmentSheetController: UIViewController {
     private let closeIcon = UIImageView()
     private let morphIcon = UIImageView()
     private var collectionView: UICollectionView!
-    private let tabCapsule = GlassSurfaceView(style: .regular, interactive: true, cornerRadius: 31.0)
+    // GlassBackgroundView(tintColor: .panel) is a dense panel, not clear
+    // glass: measured ~156 luminance over ~45 content in the capture, i.e.
+    // roughly a 0.45 white tint over the blur.
+    // Blur + fill like Telegram's own GlassBackgroundView: the native
+    // UIGlassEffect tone-maps its backdrop and cannot reach the production
+    // panel density (measured ceiling ~205 luminance whatever the tint).
+    private let tabCapsule = GlassSurfaceView(style: .regular, interactive: true, cornerRadius: 31.0,
+                                              tint: UIColor(white: 1.0, alpha: 0.55), forceLegacy: true)
+    // Lens reads ~-30 luminance vs the capsule in the capture: dark dim.
     private let lensView = GlassSurfaceView(style: .clear, cornerRadius: 28.0)
+    private let lensDim = UIView()
     // AttachmentPanel keeps TWO identical icon rows: a base one and an
     // accent-tinted one masked to the lens shape, so the recolor is literally
     // the lens sliding over the row (AttachmentPanel.swift:2556-2562).
@@ -167,8 +176,14 @@ final class AttachmentSheetController: UIViewController {
         // (private liquid glass) -> clear glass pill, radius 28 (AP:2549),
         // dimmed to the measured production tint (~-30 luminance vs capsule).
         lensView.isUserInteractionEnabled = false
-        lensView.contentView.backgroundColor = UIColor(white: 0.0, alpha: 0.10)
         tabCapsule.contentView.addSubview(lensView)
+        // Inside the legacy (blur + fill) capsule fills composite normally:
+        // 0.12 black over ~230 gives the measured production delta of ~-30.
+        lensDim.backgroundColor = UIColor(white: 0.0, alpha: 0.12)
+        lensDim.layer.cornerRadius = 28.0
+        lensDim.layer.cornerCurve = .continuous
+        lensDim.isUserInteractionEnabled = false
+        tabCapsule.contentView.addSubview(lensDim)
 
         // Production tab set from the reference capture. Wallet is an attach
         // bot whose icon is served by the bot itself — SF symbol substitute.
@@ -240,6 +255,7 @@ final class AttachmentSheetController: UIViewController {
         let target = tabFrames[nearest].insetBy(dx: 3.0, dy: 3.0)
         UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
             self.lensView.frame = target
+            self.lensDim.frame = target
             self.selectedRowMask.frame = target
         }
     }
@@ -302,6 +318,7 @@ final class AttachmentSheetController: UIViewController {
         }
         let selectedFrame = tabFrames[selectedTabIndex].insetBy(dx: 3.0, dy: 3.0)
         lensView.frame = selectedFrame
+        lensDim.frame = selectedFrame
         selectedRowMask.frame = selectedFrame
     }
 
