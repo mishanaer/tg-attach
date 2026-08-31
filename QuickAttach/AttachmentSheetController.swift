@@ -26,11 +26,22 @@ final class AttachmentSheetController: UIViewController {
     private let pillView = UIImageView()
     private let headerBackground = UIView()
     private let titleLabel = UILabel()
-    private let closeButton = UIButton(type: .system)
+    private let titleChevron = UIImageView()
+    private let closeButton = UIButton(type: .custom)
+    private let closeGlass = GlassSurfaceView(style: .regular, interactive: true)
+    private let closeIcon = UIImageView()
     private let morphIcon = UIImageView()
     private var collectionView: UICollectionView!
     private let tabCapsule = GlassSurfaceView(style: .regular, interactive: true, cornerRadius: 31.0)
     private let lensView = GlassSurfaceView(style: .clear, cornerRadius: 28.0)
+    // AttachmentPanel keeps TWO identical icon rows: a base one and an
+    // accent-tinted one masked to the lens shape, so the recolor is literally
+    // the lens sliding over the row (AttachmentPanel.swift:2556-2562).
+    private let tabsBaseRow = UIView()
+    private let tabsSelectedRow = UIView()
+    private let selectedRowMask = UIView()
+    private var selectedTabIndex = 0
+    private var tabFrames: [CGRect] = []
 
     private enum SheetState { case collapsed, expanded }
     private var state: SheetState = .collapsed
@@ -95,15 +106,25 @@ final class AttachmentSheetController: UIViewController {
         pillView.tintColor = UIColor.black.withAlphaComponent(0.07)
         sheetContentView.addSubview(pillView)
 
-        // Header: "Недавние" (MediaPickerTitleView) + "Закрыть" (Common.Close).
+        // Header (production): glass × circle on the left, centered
+        // "Recents" (Font.semibold 17, monospaced digits — MediaPickerTitleView)
+        // with the album-dropdown chevron (Navigation/TitleExpand at 40% black).
         titleLabel.text = "Recents"
         titleLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 17, weight: .semibold)
         titleLabel.textColor = .black
         sheetContentView.addSubview(titleLabel)
 
-        closeButton.setTitle("Close", for: .normal)
-        closeButton.titleLabel?.font = .systemFont(ofSize: 17)
-        closeButton.setTitleColor(Theme.accent, for: .normal)
+        titleChevron.image = UIImage(named: "NavTitleExpand")?.withRenderingMode(.alwaysTemplate)
+        titleChevron.tintColor = UIColor.black.withAlphaComponent(0.4)
+        titleChevron.contentMode = .center
+        sheetContentView.addSubview(titleChevron)
+
+        closeGlass.isUserInteractionEnabled = false
+        closeButton.addSubview(closeGlass)
+        closeIcon.image = UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+        closeIcon.tintColor = .black
+        closeIcon.contentMode = .center
+        closeGlass.contentView.addSubview(closeIcon)
         closeButton.addTarget(self, action: #selector(dimTapped), for: .touchUpInside)
         sheetContentView.addSubview(closeButton)
 
@@ -142,43 +163,82 @@ final class AttachmentSheetController: UIViewController {
 
     private func setupTabCapsule() {
         sheetContentView.addSubview(tabCapsule)
-
-        // Selection "lens" substitute behind the selected tab: 66x56, radius 28.
+        // Selection "lens" substitute behind the selected tab: LiquidLensView
+        // (private liquid glass) -> clear glass pill, radius 28 (AP:2549).
         lensView.isUserInteractionEnabled = false
         tabCapsule.contentView.addSubview(lensView)
 
-        let tabs: [(String, String)] = [
-            ("AttachGallery", "Gallery"),
-            ("AttachFile", "File"),
-            ("AttachLocation", "Location"),
-            ("AttachContact", "Contact"),
-            ("AttachPoll", "Poll"),
+        // Production tab set from the reference capture. Wallet is an attach
+        // bot whose icon is served by the bot itself — SF symbol substitute.
+        let tabs: [(UIImage?, String)] = [
+            (UIImage(named: "AttachGallery")?.withRenderingMode(.alwaysTemplate), "Gallery"),
+            (UIImage(named: "AttachArticle")?.withRenderingMode(.alwaysTemplate), "Article"),
+            (UIImage(named: "AttachGift")?.withRenderingMode(.alwaysTemplate), "Gift"),
+            (UIImage(systemName: "wallet.bifold.fill") ?? UIImage(systemName: "wallet.pass.fill"), "Wallet"),
+            (UIImage(named: "AttachFile")?.withRenderingMode(.alwaysTemplate), "File"),
+            (UIImage(named: "AttachLocation")?.withRenderingMode(.alwaysTemplate), "Location"),
         ]
+
+        // Two identical rows; the selected row is masked to the lens rect so
+        // the tint change is driven by the lens position itself.
+        tabsBaseRow.isUserInteractionEnabled = false
+        tabsSelectedRow.isUserInteractionEnabled = false
+        tabCapsule.contentView.addSubview(tabsBaseRow)
+        tabCapsule.contentView.addSubview(tabsSelectedRow)
+        selectedRowMask.backgroundColor = .black
+        selectedRowMask.layer.cornerRadius = 28.0
+        selectedRowMask.layer.cornerCurve = .continuous
+        tabsSelectedRow.mask = selectedRowMask
+
         let px = TelegramGraphics.screenPixel
-        for (index, tab) in tabs.enumerated() {
-            let selected = index == 0
-            let color = selected ? Theme.accent : UIColor.black.withAlphaComponent(0.8)
+        for (row, color) in [(tabsBaseRow, UIColor.black.withAlphaComponent(0.8)), (tabsSelectedRow, Theme.accent)] {
+            for (index, tab) in tabs.enumerated() {
+                let button = UIView()
+                button.tag = 100 + index
+                row.addSubview(button)
 
-            let button = UIView()
-            button.tag = 100 + index
-            tabCapsule.contentView.addSubview(button)
+                let icon = UIImageView(image: tab.0)
+                icon.tintColor = color
+                icon.contentMode = .scaleAspectFit
+                // Icon 30x30 at topInset 4 + px + 5 (AttachmentPanel.swift:281-286).
+                icon.frame = CGRect(x: 21.0, y: 9.0 + px, width: 30.0, height: 30.0)
+                button.addSubview(icon)
 
-            let icon = UIImageView(image: UIImage(named: tab.0))
-            icon.tintColor = color
-            icon.contentMode = .scaleAspectFit
-            // Icon 30x30 at topInset 4 + px + 5 (AttachmentPanel.swift:281-286).
-            icon.frame = CGRect(x: 21.0, y: 9.0 + px, width: 30.0, height: 30.0)
-            button.addSubview(icon)
+                let label = UILabel()
+                label.text = tab.1
+                label.font = .systemFont(ofSize: 10, weight: .medium) // glass Font.medium(10)
+                label.textColor = color
+                label.textAlignment = .center
+                label.lineBreakMode = .byTruncatingTail
+                let labelTop = icon.frame.midY + 15.0 + px + px
+                label.frame = CGRect(x: 4.0, y: labelTop, width: 64.0, height: 12.0)
+                button.addSubview(label)
+            }
+        }
 
-            let label = UILabel()
-            label.text = tab.1
-            label.font = .systemFont(ofSize: 10, weight: .medium) // glass Font.medium(10)
-            label.textColor = color
-            label.textAlignment = .center
-            label.lineBreakMode = .byTruncatingTail
-            let labelTop = icon.frame.midY + 15.0 + px + px
-            label.frame = CGRect(x: 4.0, y: labelTop, width: 64.0, height: 12.0)
-            button.addSubview(label)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tabCapsuleTapped(_:)))
+        tabCapsule.contentView.addGestureRecognizer(tap)
+    }
+
+    /// Tab switch: the lens slides to the tapped tab with the panel's spring
+    /// (.animated 0.4 .spring — AttachmentPanel.swift:1927). Tab CONTENT is out
+    /// of scope for the demo; the switcher itself is the original interaction.
+    @objc private func tabCapsuleTapped(_ gesture: UITapGestureRecognizer) {
+        let location = gesture.location(in: tabCapsule.contentView)
+        guard !tabFrames.isEmpty else { return }
+        var nearest = 0
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for (index, frame) in tabFrames.enumerated() {
+            let d = abs(frame.midX - location.x)
+            if d < bestDistance { bestDistance = d; nearest = index }
+        }
+        guard nearest != selectedTabIndex else { return }
+        selectedTabIndex = nearest
+        UISelectionFeedbackGenerator().selectionChanged()
+        let target = tabFrames[nearest].insetBy(dx: 3.0, dy: 3.0)
+        UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.0, options: [.allowUserInteraction]) {
+            self.lensView.frame = target
+            self.selectedRowMask.frame = target
         }
     }
 
@@ -202,8 +262,14 @@ final class AttachmentSheetController: UIViewController {
         pillView.frame = CGRect(x: floor((width - 36.0) / 2.0), y: 5.0, width: 36.0, height: 5.0)
         titleLabel.sizeToFit()
         titleLabel.frame.origin = CGPoint(x: floor((width - titleLabel.bounds.width) / 2.0), y: 22.0)
-        closeButton.sizeToFit()
-        closeButton.frame.origin = CGPoint(x: 16.0, y: floor(titleLabel.frame.midY - closeButton.bounds.height / 2.0))
+        if let chevron = titleChevron.image {
+            titleChevron.frame = CGRect(x: titleLabel.frame.maxX + 3.0,
+                                        y: floor(titleLabel.frame.midY - chevron.size.height / 2.0),
+                                        width: chevron.size.width, height: chevron.size.height)
+        }
+        closeButton.frame = CGRect(x: 16.0, y: floor(titleLabel.frame.midY - 20.0), width: 40.0, height: 40.0)
+        closeGlass.frame = closeButton.bounds
+        closeIcon.frame = closeButton.bounds
 
         headerBackground.frame = CGRect(x: 0, y: 0, width: width, height: headerHeight)
         collectionView.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -216,15 +282,23 @@ final class AttachmentSheetController: UIViewController {
                                   width: capsuleWidth,
                                   height: capsuleHeight)
 
-        // Tab buttons: 72x62 at y=-3; screen-coord minX = 23 + i*pitch (AP:2013-2021).
-        let pitch = floor((view.bounds.width - 23.0 * 2.0 - 72.0) / 4.0)
-        for button in tabCapsule.contentView.subviews where button.tag >= 100 {
-            let index = button.tag - 100
-            button.frame = CGRect(x: 23.0 - capsuleSideInset + CGFloat(index) * pitch, y: -3.0, width: 72.0, height: 62.0)
-            if index == 0 {
-                lensView.frame = button.frame.insetBy(dx: 3.0, dy: 3.0)
+        // Tab buttons: 72x62 at y=-3; screen-coord minX = 23 + i*pitch —
+        // AttachmentPanel.swift:2021: (width - sideInset*2 - buttonWidth) / (count-1).
+        tabsBaseRow.frame = tabCapsule.contentView.bounds
+        tabsSelectedRow.frame = tabCapsule.contentView.bounds
+        let tabCount = tabsBaseRow.subviews.count
+        let pitch = floor((view.bounds.width - 23.0 * 2.0 - 72.0) / CGFloat(max(1, tabCount - 1)))
+        tabFrames = (0..<tabCount).map { index in
+            CGRect(x: 23.0 - capsuleSideInset + CGFloat(index) * pitch, y: -3.0, width: 72.0, height: 62.0)
+        }
+        for row in [tabsBaseRow, tabsSelectedRow] {
+            for button in row.subviews {
+                button.frame = tabFrames[button.tag - 100]
             }
         }
+        let selectedFrame = tabFrames[selectedTabIndex].insetBy(dx: 3.0, dy: 3.0)
+        lensView.frame = selectedFrame
+        selectedRowMask.frame = selectedFrame
     }
 
     // MARK: - Presentation morph (AttachmentController.swift:1150-1216)
