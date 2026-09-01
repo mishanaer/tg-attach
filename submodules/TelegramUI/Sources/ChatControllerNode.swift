@@ -285,7 +285,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
     private(set) var textInputPanelNode: ChatTextInputPanelNode?
     private var quickAttachOverlay: QuickAttachFlowOverlayView?
     private var quickAttachBackdrop: UIVisualEffectView?
-    private var quickAttachSelection: QuickAttachMediaItem?
+    private var quickAttachSelections: [QuickAttachMediaItem] = []
     
     private var inputMediaNodeData: ChatEntityKeyboardInputNode.InputData?
     private var inputMediaNodeDataPromise = Promise<ChatEntityKeyboardInputNode.InputData>()
@@ -1045,8 +1045,8 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             textInputPanelNode.attachmentButtonContextSource.activated = { [weak self] gesture, _ in
                 self?.presentQuickAttach(gesture: gesture)
             }
-            textInputPanelNode.removeQuickAttach = { [weak self] in
-                self?.clearQuickAttachSelection(animated: true)
+            textInputPanelNode.removeQuickAttach = { [weak self] identifier in
+                self?.clearQuickAttachSelection(identifier: identifier, animated: true)
             }
         }
         self.textInputPanelNode?.updateActivity = { [weak self] in
@@ -4117,20 +4117,27 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         let backdrop = UIVisualEffectView(effect: nil)
         backdrop.frame = containerView.bounds
         backdrop.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        containerView.insertSubview(backdrop, belowSubview: self.inputPanelContainerNode.view)
-        self.quickAttachBackdrop = backdrop
-
         let overlay = QuickAttachFlowOverlayView(
             frame: containerView.bounds,
             isDark: state.theme.overallDarkAppearance
         )
         overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let sourceView = textInputPanelNode.attachmentButtonContextSource
+        let sourceRect = sourceView.convert(CGRect(x: 0.0, y: sourceView.bounds.height - 40.0, width: 40.0, height: 40.0), to: containerView)
+        textInputPanelNode.setQuickAttachActive(true, animated: true)
+
+        let backdropMask = CAShapeLayer()
+        let backdropMaskPath = UIBezierPath(rect: backdrop.bounds)
+        backdropMaskPath.append(UIBezierPath(roundedRect: sourceRect.insetBy(dx: -2.0, dy: -2.0), cornerRadius: 22.0))
+        backdropMask.path = backdropMaskPath.cgPath
+        backdropMask.fillRule = .evenOdd
+        backdrop.layer.mask = backdropMask
+        backdrop.isUserInteractionEnabled = false
+
+        containerView.addSubview(backdrop)
+        self.quickAttachBackdrop = backdrop
         containerView.addSubview(overlay)
         self.quickAttachOverlay = overlay
-
-        let sourceView = textInputPanelNode.attachmentButtonContextSource
-        let sourceRect = sourceView.convert(sourceView.bounds, to: containerView)
-        textInputPanelNode.setQuickAttachActive(true, animated: true)
         overlay.present(items: Array(QuickAttachRecentPhotosProvider.shared.items.prefix(3)), from: sourceRect)
 
         UIView.animate(withDuration: 0.16) {
@@ -4194,10 +4201,15 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             self.cancelQuickAttach()
             return
         }
-        self.quickAttachSelection = item
+        let assetIdentifier = item.asset?.localIdentifier ?? ""
+        if self.quickAttachSelections.contains(where: { $0.asset?.localIdentifier == assetIdentifier }) {
+            self.cancelQuickAttach()
+            return
+        }
+        self.quickAttachSelections.append(item)
         let previousTransition = self.overrideUpdateTextInputHeightTransition
         self.overrideUpdateTextInputHeightTransition = .animated(duration: 0.32, curve: .spring)
-        let targetRect = textInputPanelNode.prepareQuickAttachPreview(image: item.image, in: overlay)
+        let targetRect = textInputPanelNode.prepareQuickAttachPreview(identifier: assetIdentifier, image: item.image, in: overlay)
         self.overrideUpdateTextInputHeightTransition = previousTransition
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         self.beginQuickAttachBackdropDismissal()
@@ -4206,7 +4218,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 return
             }
             self.completeQuickAttachDismissal()
-            textInputPanelNode?.revealQuickAttachPreview(image: item.image)
+            textInputPanelNode?.revealQuickAttachPreview(identifier: assetIdentifier)
         }
     }
 
@@ -4238,27 +4250,28 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         self.beginQuickAttachBackdropDismissal()
     }
 
-    private func clearQuickAttachSelection(animated: Bool) {
-        guard self.quickAttachSelection != nil else {
+    private func clearQuickAttachSelection(identifier: String? = nil, animated: Bool) {
+        guard !self.quickAttachSelections.isEmpty else {
             return
         }
-        self.quickAttachSelection = nil
+        if let identifier {
+            self.quickAttachSelections.removeAll(where: { $0.asset?.localIdentifier == identifier })
+        } else {
+            self.quickAttachSelections.removeAll()
+        }
         let previousTransition = self.overrideUpdateTextInputHeightTransition
         self.overrideUpdateTextInputHeightTransition = animated ? .animated(duration: 0.32, curve: .spring) : .immediate
-        self.textInputPanelNode?.clearQuickAttachPreview(animated: animated)
+        self.textInputPanelNode?.clearQuickAttachPreview(identifier: identifier, animated: animated)
         self.overrideUpdateTextInputHeightTransition = previousTransition
     }
 
     private func sendQuickAttachSelectionIfNeeded(controller: ChatControllerImpl) -> Bool {
-        guard let selection = self.quickAttachSelection, let asset = selection.asset else {
+        let assets = self.quickAttachSelections.compactMap(\.asset)
+        guard !assets.isEmpty else {
             return false
         }
-        let assetIdentifier = asset.localIdentifier
-        controller.enqueueQuickAttachAsset(asset, getAnimatedTransitionSource: { [weak self] identifier in
-            guard identifier == assetIdentifier else {
-                return nil
-            }
-            return self?.textInputPanelNode?.quickAttachPreviewTransitionView()
+        controller.enqueueQuickAttachAssets(assets, getAnimatedTransitionSource: { [weak self] identifier in
+            return self?.textInputPanelNode?.quickAttachPreviewTransitionView(identifier: identifier)
         }, completion: { [weak self] in
             self?.clearQuickAttachSelection(animated: true)
         })

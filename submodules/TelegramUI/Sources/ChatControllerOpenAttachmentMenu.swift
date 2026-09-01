@@ -48,12 +48,12 @@ extension ChatControllerImpl {
         case gift
     }
 
-    func enqueueQuickAttachAsset(
-        _ asset: PHAsset,
+    func enqueueQuickAttachAssets(
+        _ assets: [PHAsset],
         getAnimatedTransitionSource: @escaping (String) -> UIView?,
         completion: @escaping () -> Void
     ) {
-        guard asset.mediaType == .image else {
+        guard !assets.isEmpty, assets.allSatisfy({ $0.mediaType == .image }) else {
             self.presentQuickAttachPreparationError()
             return
         }
@@ -69,10 +69,15 @@ extension ChatControllerImpl {
             guard let self else {
                 return
             }
-            guard let mediaAsset = TGMediaAsset(phAsset: asset),
-                  let selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: 1) else {
+            let mediaAssets = assets.compactMap(TGMediaAsset.init(phAsset:))
+            guard mediaAssets.count == assets.count,
+                  let selectionContext = TGMediaSelectionContext(groupingAllowed: true, selectionLimit: Int32(assets.count)) else {
                 self.presentQuickAttachPreparationError()
                 return
+            }
+            selectionContext.grouping = true
+            for mediaAsset in mediaAssets {
+                selectionContext.setItem(mediaAsset, selected: true)
             }
             let editingContext = TGMediaEditingContext()
 
@@ -88,7 +93,7 @@ extension ChatControllerImpl {
                 for: selectionContext,
                 editingContext: editingContext,
                 intent: TGMediaAssetsControllerSendMediaIntent,
-                currentItem: mediaAsset,
+                currentItem: nil,
                 storeAssets: true,
                 convertToJpeg: false,
                 descriptionGenerator: legacyAssetPickerItemGenerator(),

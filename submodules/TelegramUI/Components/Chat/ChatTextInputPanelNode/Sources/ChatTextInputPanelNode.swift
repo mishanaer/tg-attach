@@ -308,10 +308,13 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     private var contextPanel: (container: UIView, mask: UIImageView, panel: ChatInputContextPanelNode)?
     private var mediaPreviewPanelNode: ChatRecordingPreviewInputPanelNodeImpl?
 
-    private let quickAttachPreviewContainer: UIView
-    private let quickAttachPreviewImageView: UIImageView
-    private let quickAttachPreviewRemoveButton: UIButton
-    public private(set) var quickAttachPreviewImage: UIImage?
+    private struct QuickAttachPreview {
+        let identifier: String
+        let container: UIView
+        let imageView: UIImageView
+        let removeButton: UIButton
+    }
+    private var quickAttachPreviews: [QuickAttachPreview] = []
 
     private enum QuickAttachPreviewLayout {
         static let side: CGFloat = 90.0
@@ -341,7 +344,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     
     public var displayAttachmentMenu: () -> Void = { }
     public var sendMessage: () -> Void = { }
-    public var removeQuickAttach: () -> Void = { }
+    public var removeQuickAttach: (String) -> Void = { _ in }
     public var isQuickAttachGestureEnabled = false {
         didSet {
             self.attachmentButtonContextSource.isGestureEnabled = self.isQuickAttachGestureEnabled
@@ -743,10 +746,6 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         
         self.textInputContainerBackgroundView = GlassBackgroundView(frame: CGRect())
 
-        self.quickAttachPreviewContainer = UIView(frame: .zero)
-        self.quickAttachPreviewImageView = UIImageView(frame: .zero)
-        self.quickAttachPreviewRemoveButton = UIButton(type: .custom)
-        
         self.accessoryPanelContainer = UIView()
         self.accessoryPanelContainer.clipsToBounds = true
         
@@ -1074,23 +1073,6 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.glassBackgroundContainer.contentView.addSubview(self.textInputContainerBackgroundView)
         
         self.textInputContainerBackgroundView.contentView.addSubview(self.accessoryPanelContainer)
-        self.quickAttachPreviewContainer.alpha = 0.0
-        self.quickAttachPreviewContainer.isAccessibilityElement = false
-        self.quickAttachPreviewContainer.accessibilityLabel = "Attached photo"
-        self.quickAttachPreviewImageView.contentMode = .scaleAspectFill
-        self.quickAttachPreviewImageView.clipsToBounds = true
-        self.quickAttachPreviewImageView.layer.cornerRadius = 10.0
-        self.quickAttachPreviewImageView.layer.cornerCurve = .continuous
-        self.quickAttachPreviewContainer.addSubview(self.quickAttachPreviewImageView)
-        self.quickAttachPreviewRemoveButton.backgroundColor = UIColor(white: 0.0, alpha: 0.4)
-        self.quickAttachPreviewRemoveButton.layer.cornerRadius = 11.0
-        self.quickAttachPreviewRemoveButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10.0, weight: .bold)), for: .normal)
-        self.quickAttachPreviewRemoveButton.tintColor = .white
-        self.quickAttachPreviewRemoveButton.accessibilityLabel = "Remove attached photo"
-        self.quickAttachPreviewRemoveButton.accessibilityIdentifier = "quickAttach.preview.remove"
-        self.quickAttachPreviewRemoveButton.addTarget(self, action: #selector(self.removeQuickAttachPreview), for: .touchUpInside)
-        self.quickAttachPreviewContainer.addSubview(self.quickAttachPreviewRemoveButton)
-        self.textInputContainerBackgroundView.contentView.addSubview(self.quickAttachPreviewContainer)
         self.textInputContainerBackgroundView.contentView.addSubview(self.textPlaceholderNode.view)
         self.textInputContainerBackgroundView.contentView.addSubview(self.textInputNodeClippingContainer)
         
@@ -1792,7 +1774,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                 isMediaEnabled = true
             }
         }
-        hasMediaDraft = interfaceState.interfaceState.mediaDraftState != nil || self.quickAttachPreviewImage != nil
+        hasMediaDraft = interfaceState.interfaceState.mediaDraftState != nil || !self.quickAttachPreviews.isEmpty
         
         let hasForward = interfaceState.interfaceState.forwardMessageIds != nil
         
@@ -2565,7 +2547,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         
         self.mediaActionButtons.micButton.updateMode(mode: interfaceState.interfaceState.mediaRecordingMode, animated: transition.isAnimated)
         
-        self.updateActionButtons(hasText: inputHasText || self.quickAttachPreviewImage != nil, transition: transition)
+        self.updateActionButtons(hasText: inputHasText || !self.quickAttachPreviews.isEmpty, transition: transition)
         
         var mediaActionButtonsSize = CGSize(width: 40.0, height: 40.0)
         var sendActionButtonsSize = CGSize(width: 40.0, height: 40.0)
@@ -3153,21 +3135,23 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             contentHeight += accessoryPanelSize.height
         }
 
-        if self.quickAttachPreviewImage != nil {
-            let previewFrame = CGRect(
-                x: QuickAttachPreviewLayout.inset,
-                y: contentHeight + QuickAttachPreviewLayout.inset,
-                width: QuickAttachPreviewLayout.side,
-                height: QuickAttachPreviewLayout.side
-            )
-            transition.updateFrame(view: self.quickAttachPreviewContainer, frame: previewFrame)
-            self.quickAttachPreviewImageView.frame = self.quickAttachPreviewContainer.bounds
-            self.quickAttachPreviewRemoveButton.frame = CGRect(
-                x: QuickAttachPreviewLayout.side - QuickAttachPreviewLayout.removeSide - QuickAttachPreviewLayout.removeInset,
-                y: QuickAttachPreviewLayout.removeInset,
-                width: QuickAttachPreviewLayout.removeSide,
-                height: QuickAttachPreviewLayout.removeSide
-            )
+        if !self.quickAttachPreviews.isEmpty {
+            for (index, preview) in self.quickAttachPreviews.enumerated() {
+                let previewFrame = CGRect(
+                    x: QuickAttachPreviewLayout.inset + CGFloat(index) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
+                    y: contentHeight + QuickAttachPreviewLayout.inset,
+                    width: QuickAttachPreviewLayout.side,
+                    height: QuickAttachPreviewLayout.side
+                )
+                transition.updateFrame(view: preview.container, frame: previewFrame)
+                preview.imageView.frame = preview.container.bounds
+                preview.removeButton.frame = CGRect(
+                    x: QuickAttachPreviewLayout.side - QuickAttachPreviewLayout.removeSide - QuickAttachPreviewLayout.removeInset,
+                    y: QuickAttachPreviewLayout.removeInset,
+                    width: QuickAttachPreviewLayout.removeSide,
+                    height: QuickAttachPreviewLayout.removeSide
+                )
+            }
             contentHeight += QuickAttachPreviewLayout.rowHeight
         }
         
@@ -5670,18 +5654,17 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         return self.chatInputTextNodeShouldPaste()
     }
 
-    public func prepareQuickAttachPreview(image: UIImage, in coordinateView: UIView) -> CGRect {
-        let wasEmpty = self.quickAttachPreviewImage == nil
+    public func prepareQuickAttachPreview(identifier: String, image: UIImage, in coordinateView: UIView) -> CGRect {
+        let wasEmpty = self.quickAttachPreviews.isEmpty
         let currentBackgroundFrame = self.textInputContainerBackgroundView.convert(self.textInputContainerBackgroundView.bounds, to: coordinateView)
         let accessoryHeight = self.accessoryPanel?.view.view?.bounds.height ?? 0.0
-        self.quickAttachPreviewImage = image
-        self.quickAttachPreviewImageView.image = image
-        self.quickAttachPreviewContainer.alpha = 0.0
-        self.quickAttachPreviewRemoveButton.alpha = 0.0
+        let preview = self.makeQuickAttachPreview(identifier: identifier, image: image)
+        self.quickAttachPreviews.append(preview)
+        self.textInputContainerBackgroundView.contentView.addSubview(preview.container)
         self.updateHeight(true)
 
         return CGRect(
-            x: currentBackgroundFrame.minX + QuickAttachPreviewLayout.inset,
+            x: currentBackgroundFrame.minX + QuickAttachPreviewLayout.inset + CGFloat(self.quickAttachPreviews.count - 1) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
             y: currentBackgroundFrame.minY - (wasEmpty ? QuickAttachPreviewLayout.rowHeight : 0.0) + accessoryHeight + QuickAttachPreviewLayout.inset,
             width: QuickAttachPreviewLayout.side,
             height: QuickAttachPreviewLayout.side
@@ -5705,46 +5688,90 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         }
     }
 
-    public func revealQuickAttachPreview(image: UIImage) {
-        self.quickAttachPreviewImage = image
-        self.quickAttachPreviewImageView.image = image
-        self.quickAttachPreviewContainer.alpha = 1.0
-        self.quickAttachPreviewRemoveButton.alpha = 1.0
+    public func revealQuickAttachPreview(identifier: String) {
+        guard let preview = self.quickAttachPreviews.first(where: { $0.identifier == identifier }) else {
+            return
+        }
+        preview.container.alpha = 1.0
+        preview.removeButton.alpha = 1.0
     }
 
-    public func quickAttachPreviewTransitionView() -> UIView? {
-        guard self.quickAttachPreviewImage != nil, let view = self.quickAttachPreviewImageView.layer.snapshotContentTreeAsView(unhide: true) else {
+    public func quickAttachPreviewTransitionView(identifier: String) -> UIView? {
+        guard let preview = self.quickAttachPreviews.first(where: { $0.identifier == identifier }), let view = preview.imageView.layer.snapshotContentTreeAsView(unhide: true) else {
             return nil
         }
-        view.frame = self.quickAttachPreviewImageView.convert(self.quickAttachPreviewImageView.bounds, to: nil)
-        self.quickAttachPreviewContainer.alpha = 0.0
+        view.frame = preview.imageView.convert(preview.imageView.bounds, to: nil)
+        preview.container.alpha = 0.0
         return view
     }
 
-    public func clearQuickAttachPreview(animated: Bool) {
-        guard self.quickAttachPreviewImage != nil else {
+    public func clearQuickAttachPreview(identifier: String? = nil, animated: Bool) {
+        let removedPreviews: [QuickAttachPreview]
+        if let identifier {
+            removedPreviews = self.quickAttachPreviews.filter { $0.identifier == identifier }
+            self.quickAttachPreviews.removeAll(where: { $0.identifier == identifier })
+        } else {
+            removedPreviews = self.quickAttachPreviews
+            self.quickAttachPreviews.removeAll()
+        }
+        guard !removedPreviews.isEmpty else {
             return
         }
-        self.quickAttachPreviewImage = nil
-        let completion: (Bool) -> Void = { [weak self] _ in
-            self?.quickAttachPreviewImageView.image = nil
+        self.updateHeight(animated)
+        let completion: (Bool) -> Void = { _ in
+            for preview in removedPreviews {
+                preview.container.removeFromSuperview()
+            }
         }
         if animated {
             UIView.animate(withDuration: 0.07, animations: {
-                self.quickAttachPreviewContainer.alpha = 0.0
-                self.quickAttachPreviewRemoveButton.alpha = 0.0
+                for preview in removedPreviews {
+                    preview.container.alpha = 0.0
+                    preview.removeButton.alpha = 0.0
+                }
             }, completion: completion)
         } else {
-            self.quickAttachPreviewContainer.alpha = 0.0
-            self.quickAttachPreviewRemoveButton.alpha = 0.0
+            for preview in removedPreviews {
+                preview.container.alpha = 0.0
+                preview.removeButton.alpha = 0.0
+            }
             completion(true)
         }
-        self.updateHeight(animated)
     }
 
-    @objc private func removeQuickAttachPreview() {
+    private func makeQuickAttachPreview(identifier: String, image: UIImage) -> QuickAttachPreview {
+        let container = UIView(frame: .zero)
+        container.alpha = 0.0
+        container.isAccessibilityElement = false
+        container.accessibilityLabel = "Attached photo"
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        imageView.layer.cornerRadius = 10.0
+        imageView.layer.cornerCurve = .continuous
+        container.addSubview(imageView)
+
+        let removeButton = UIButton(type: .custom)
+        removeButton.alpha = 0.0
+        removeButton.backgroundColor = UIColor(white: 0.0, alpha: 0.4)
+        removeButton.layer.cornerRadius = 11.0
+        removeButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10.0, weight: .bold)), for: .normal)
+        removeButton.tintColor = .white
+        removeButton.accessibilityLabel = "Remove attached photo"
+        removeButton.accessibilityIdentifier = "quickAttach.preview.remove"
+        removeButton.addTarget(self, action: #selector(self.removeQuickAttachPreview(_:)), for: .touchUpInside)
+        container.addSubview(removeButton)
+
+        return QuickAttachPreview(identifier: identifier, container: container, imageView: imageView, removeButton: removeButton)
+    }
+
+    @objc private func removeQuickAttachPreview(_ sender: UIButton) {
+        guard let identifier = self.quickAttachPreviews.first(where: { $0.removeButton === sender })?.identifier else {
+            return
+        }
         self.hapticFeedback.impact(.light)
-        self.removeQuickAttach()
+        self.removeQuickAttach(identifier)
     }
     
     @objc func sendButtonPressed() {
