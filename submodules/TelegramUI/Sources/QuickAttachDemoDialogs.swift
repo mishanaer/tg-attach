@@ -110,6 +110,54 @@ private func makeQuickAttachDemoUser(id: PeerId, firstName: String, lastName: St
 }
 
 extension QuickAttachDemo {
+    static func locallyAcknowledgedMessages(postbox: Postbox, messages: [Message]) -> Signal<[Message], NoError> {
+        let outgoingPendingFlags: MessageFlags = [.Unsent, .Failed, .Sending]
+        let displayedMessages = messages.map { message -> Message in
+            guard !message.flags.contains(.Incoming) else {
+                return message
+            }
+            return message.withUpdatedFlags(message.flags.subtracting(outgoingPendingFlags))
+        }
+        let failedMessageIds = messages.compactMap { message -> MessageId? in
+            guard !message.flags.contains(.Incoming), message.flags.contains(.Failed) else {
+                return nil
+            }
+            return message.id
+        }
+        guard !failedMessageIds.isEmpty else {
+            return .single(displayedMessages)
+        }
+
+        return postbox.transaction { transaction -> Void in
+            for messageId in failedMessageIds {
+                transaction.updateMessage(messageId, update: { currentMessage in
+                    var flags = StoreMessageFlags(currentMessage.flags)
+                    flags.remove(.Unsent)
+                    flags.remove(.Failed)
+                    flags.remove(.Sending)
+                    return .update(StoreMessage(
+                        id: currentMessage.id,
+                        customStableId: nil,
+                        globallyUniqueId: currentMessage.globallyUniqueId,
+                        groupingKey: currentMessage.groupingKey,
+                        threadId: currentMessage.threadId,
+                        timestamp: currentMessage.timestamp,
+                        flags: flags,
+                        tags: currentMessage.tags,
+                        globalTags: currentMessage.globalTags,
+                        localTags: currentMessage.localTags,
+                        forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init),
+                        authorId: currentMessage.author?.id,
+                        text: currentMessage.text,
+                        attributes: currentMessage.attributes,
+                        media: currentMessage.media
+                    ))
+                })
+            }
+        }
+        |> map { displayedMessages }
+    }
+
     static func localDialogMessageIds(peerId: PeerId) -> [MessageId]? {
         guard let dialog = quickAttachDemoDialogs.first(where: { $0.peerId == peerId }) else {
             return nil

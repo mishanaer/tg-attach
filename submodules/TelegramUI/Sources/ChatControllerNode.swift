@@ -752,9 +752,12 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 namespaces: .not(Namespaces.Message.allNonRegular),
                 orderStatistics: []
             )
-            |> map { view, _, _ -> ([Message], Int32, Bool) in
+            |> mapToSignal { view, _, _ -> Signal<([Message], Int32, Bool), NoError> in
                 let messages = view.entries.reversed().map(\.message)
-                return (messages, Int32(messages.count), false)
+                return QuickAttachDemo.locallyAcknowledgedMessages(postbox: context.account.postbox, messages: messages)
+                |> map { messages in
+                    return (messages, Int32(messages.count), false)
+                }
             }
             source = .custom(messages: messages, messageId: nil, quote: nil, isSavedMusic: false, canReorder: false, loadMore: nil)
         } else if case .customChatContents = chatLocation {
