@@ -1034,7 +1034,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             self?.displayAttachmentMenu()
         }
         if QuickAttachDemo.isEnabled, let textInputPanelNode = self.textInputPanelNode {
-            QuickAttachRecentPhotosProvider.shared.prefetch(count: 3)
+            QuickAttachRecentPhotosProvider.shared.prefetch(count: 6)
             textInputPanelNode.isQuickAttachGestureEnabled = true
             textInputPanelNode.attachmentButtonContextSource.shouldBegin = { [weak self, weak source = textInputPanelNode.attachmentButtonContextSource] point in
                 guard let self, let source else {
@@ -4110,7 +4110,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             gesture.cancel()
             return
         }
-        QuickAttachRecentPhotosProvider.shared.prefetch(count: 3, requestAccess: true)
+        QuickAttachRecentPhotosProvider.shared.prefetch(count: self.quickAttachSelections.count + 6, requestAccess: true)
         self.view.endEditing(false)
 
         let state = self.chatPresentationInterfaceState
@@ -4142,7 +4142,14 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         containerView.addSubview(buttonVisual)
         containerView.addSubview(overlay)
         self.quickAttachOverlay = overlay
-        overlay.present(items: Array(QuickAttachRecentPhotosProvider.shared.items.prefix(3)), from: sourceRect)
+        let selectedAssetIdentifiers = Set(self.quickAttachSelections.compactMap { $0.asset?.localIdentifier })
+        let availableItems = QuickAttachRecentPhotosProvider.shared.items.filter { item in
+            guard let assetIdentifier = item.asset?.localIdentifier else {
+                return false
+            }
+            return !selectedAssetIdentifiers.contains(assetIdentifier)
+        }
+        overlay.present(items: Array(availableItems.prefix(3)), from: sourceRect)
 
         UIView.animate(withDuration: 0.16) {
             backdrop.effect = UIBlurEffect(style: state.theme.overallDarkAppearance ? .systemUltraThinMaterialDark : .systemUltraThinMaterialLight)

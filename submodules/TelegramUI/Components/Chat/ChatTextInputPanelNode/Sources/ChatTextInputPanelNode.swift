@@ -315,9 +315,10 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         let removeButton: UIButton
     }
     private var quickAttachPreviews: [QuickAttachPreview] = []
+    private var quickAttachPreviewScrollView: UIScrollView?
 
     private enum QuickAttachPreviewLayout {
-        static let side: CGFloat = 90.0
+        static let side: CGFloat = 86.0
         static let inset: CGFloat = 8.0
         static let rowHeight: CGFloat = side + inset
         static let removeSide: CGFloat = 22.0
@@ -3135,11 +3136,15 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             contentHeight += accessoryPanelSize.height
         }
 
-        if !self.quickAttachPreviews.isEmpty {
+        if !self.quickAttachPreviews.isEmpty, let quickAttachPreviewScrollView = self.quickAttachPreviewScrollView {
+            transition.updateFrame(
+                view: quickAttachPreviewScrollView,
+                frame: CGRect(x: 0.0, y: contentHeight, width: textInputWidth, height: QuickAttachPreviewLayout.rowHeight)
+            )
             for (index, preview) in self.quickAttachPreviews.enumerated() {
                 let previewFrame = CGRect(
                     x: QuickAttachPreviewLayout.inset + CGFloat(index) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
-                    y: contentHeight + QuickAttachPreviewLayout.inset,
+                    y: QuickAttachPreviewLayout.inset,
                     width: QuickAttachPreviewLayout.side,
                     height: QuickAttachPreviewLayout.side
                 )
@@ -3152,6 +3157,10 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                     height: QuickAttachPreviewLayout.removeSide
                 )
             }
+            quickAttachPreviewScrollView.contentSize = CGSize(
+                width: QuickAttachPreviewLayout.inset + CGFloat(self.quickAttachPreviews.count) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
+                height: QuickAttachPreviewLayout.rowHeight
+            )
             contentHeight += QuickAttachPreviewLayout.rowHeight
         }
         
@@ -5660,11 +5669,35 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         let accessoryHeight = self.accessoryPanel?.view.view?.bounds.height ?? 0.0
         let preview = self.makeQuickAttachPreview(identifier: identifier, image: image)
         self.quickAttachPreviews.append(preview)
-        self.textInputContainerBackgroundView.contentView.addSubview(preview.container)
+
+        let quickAttachPreviewScrollView: UIScrollView
+        if let current = self.quickAttachPreviewScrollView {
+            quickAttachPreviewScrollView = current
+        } else {
+            quickAttachPreviewScrollView = UIScrollView()
+            quickAttachPreviewScrollView.alwaysBounceHorizontal = true
+            quickAttachPreviewScrollView.showsHorizontalScrollIndicator = false
+            quickAttachPreviewScrollView.contentInsetAdjustmentBehavior = .never
+            quickAttachPreviewScrollView.disablesInteractiveTransitionGestureRecognizerNow = { [weak quickAttachPreviewScrollView] in
+                guard let quickAttachPreviewScrollView else {
+                    return false
+                }
+                return quickAttachPreviewScrollView.contentOffset.x > .ulpOfOne
+            }
+            self.quickAttachPreviewScrollView = quickAttachPreviewScrollView
+            self.textInputContainerBackgroundView.contentView.addSubview(quickAttachPreviewScrollView)
+        }
+        quickAttachPreviewScrollView.addSubview(preview.container)
+
+        let previewX = QuickAttachPreviewLayout.inset + CGFloat(self.quickAttachPreviews.count - 1) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset)
+        let contentWidth = previewX + QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset
+        let targetContentOffsetX = max(0.0, contentWidth - currentBackgroundFrame.width)
+        quickAttachPreviewScrollView.contentSize = CGSize(width: contentWidth, height: QuickAttachPreviewLayout.rowHeight)
+        quickAttachPreviewScrollView.setContentOffset(CGPoint(x: targetContentOffsetX, y: 0.0), animated: !wasEmpty)
         self.updateHeight(true)
 
         return CGRect(
-            x: currentBackgroundFrame.minX + QuickAttachPreviewLayout.inset + CGFloat(self.quickAttachPreviews.count - 1) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
+            x: currentBackgroundFrame.minX + previewX - targetContentOffsetX,
             y: currentBackgroundFrame.minY - (wasEmpty ? QuickAttachPreviewLayout.rowHeight : 0.0) + accessoryHeight + QuickAttachPreviewLayout.inset,
             width: QuickAttachPreviewLayout.side,
             height: QuickAttachPreviewLayout.side
@@ -5717,11 +5750,19 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         guard !removedPreviews.isEmpty else {
             return
         }
+        let removedScrollView: UIScrollView?
+        if self.quickAttachPreviews.isEmpty {
+            removedScrollView = self.quickAttachPreviewScrollView
+            self.quickAttachPreviewScrollView = nil
+        } else {
+            removedScrollView = nil
+        }
         self.updateHeight(animated)
         let completion: (Bool) -> Void = { _ in
             for preview in removedPreviews {
                 preview.container.removeFromSuperview()
             }
+            removedScrollView?.removeFromSuperview()
         }
         if animated {
             UIView.animate(withDuration: 0.07, animations: {
