@@ -285,6 +285,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
     private(set) var textInputPanelNode: ChatTextInputPanelNode?
     private var quickAttachOverlay: QuickAttachFlowOverlayView?
     private var quickAttachBackdrop: UIVisualEffectView?
+    private var quickAttachButtonVisualRestoreState: (superview: UIView, index: Int, frame: CGRect)?
     private var quickAttachSelections: [QuickAttachMediaItem] = []
     
     private var inputMediaNodeData: ChatEntityKeyboardInputNode.InputData?
@@ -4124,18 +4125,21 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let sourceView = textInputPanelNode.attachmentButtonContextSource
         let sourceRect = sourceView.convert(CGRect(x: 0.0, y: sourceView.bounds.height - 40.0, width: 40.0, height: 40.0), to: containerView)
+        let buttonVisual = textInputPanelNode.attachmentButtonBackground
+        guard let buttonSuperview = buttonVisual.superview else {
+            gesture.cancel()
+            return
+        }
         textInputPanelNode.setQuickAttachActive(true, animated: true)
-
-        let backdropMask = CAShapeLayer()
-        let backdropMaskPath = UIBezierPath(rect: backdrop.bounds)
-        backdropMaskPath.append(UIBezierPath(roundedRect: sourceRect.insetBy(dx: -2.0, dy: -2.0), cornerRadius: 22.0))
-        backdropMask.path = backdropMaskPath.cgPath
-        backdropMask.fillRule = .evenOdd
-        backdrop.layer.mask = backdropMask
         backdrop.isUserInteractionEnabled = false
 
+        let buttonFrame = buttonVisual.convert(buttonVisual.bounds, to: containerView)
+        self.quickAttachButtonVisualRestoreState = (buttonSuperview, buttonSuperview.subviews.firstIndex(of: buttonVisual) ?? buttonSuperview.subviews.count, buttonVisual.frame)
+        buttonVisual.removeFromSuperview()
+        buttonVisual.frame = buttonFrame
         containerView.addSubview(backdrop)
         self.quickAttachBackdrop = backdrop
+        containerView.addSubview(buttonVisual)
         containerView.addSubview(overlay)
         self.quickAttachOverlay = overlay
         overlay.present(items: Array(QuickAttachRecentPhotosProvider.shared.items.prefix(3)), from: sourceRect)
@@ -4170,6 +4174,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             self.cancelQuickAttach()
             return
         }
+        textInputPanelNode.setQuickAttachActive(false, animated: true)
         if selectedIndex == 0, let cameraView = overlay.cameraView {
             guard let controller = self.controller else {
                 self.cancelQuickAttach()
@@ -4206,6 +4211,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             self.cancelQuickAttach()
             return
         }
+        self.restoreQuickAttachButtonVisual()
         self.quickAttachSelections.append(item)
         let previousTransition = self.overrideUpdateTextInputHeightTransition
         self.overrideUpdateTextInputHeightTransition = .animated(duration: 0.32, curve: .spring)
@@ -4226,6 +4232,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         guard let overlay = self.quickAttachOverlay else {
             return
         }
+        self.textInputPanelNode?.setQuickAttachActive(false, animated: true)
         self.beginQuickAttachBackdropDismissal()
         overlay.dismiss(selectedIndex: nil, targetRect: nil) { [weak self] in
             self?.completeQuickAttachDismissal()
@@ -4246,8 +4253,18 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
 
     private func completeQuickAttachDismissal() {
         self.quickAttachOverlay = nil
-        self.textInputPanelNode?.setQuickAttachActive(false, animated: true)
+        self.restoreQuickAttachButtonVisual()
         self.beginQuickAttachBackdropDismissal()
+    }
+
+    private func restoreQuickAttachButtonVisual() {
+        guard let restoreState = self.quickAttachButtonVisualRestoreState, let buttonVisual = self.textInputPanelNode?.attachmentButtonBackground else {
+            return
+        }
+        self.quickAttachButtonVisualRestoreState = nil
+        buttonVisual.removeFromSuperview()
+        restoreState.superview.insertSubview(buttonVisual, at: min(restoreState.index, restoreState.superview.subviews.count))
+        buttonVisual.frame = restoreState.frame
     }
 
     private func clearQuickAttachSelection(identifier: String? = nil, animated: Bool) {
