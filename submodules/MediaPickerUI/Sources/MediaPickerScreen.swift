@@ -2596,6 +2596,12 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         guard let layout = self.validLayout else {
             return
         }
+        let usesSwappedControls: Bool
+        if case .glass = self.style, case .assets(_, .default) = self.subject, !self.hasSelectButton {
+            usesSwappedControls = true
+        } else {
+            usesSwappedControls = false
+        }
     
         var moreIsVisible = false
         var isBack = false
@@ -2629,7 +2635,8 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             let selectedSize = self.selectedButtonNode.update(count: count)
             
             let navigationHeight = navigationLayout(layout: layout).navigationFrame.height
-            self.selectedButtonNode.frame = CGRect(origin: CGPoint(x: 16.0 + 44.0 + 12.0, y: self._hasGlassStyle ? 16.0 : floorToScreenPixels((navigationHeight - selectedSize.height) / 2.0) + 1.0), size: selectedSize)
+            let selectedButtonX = usesSwappedControls ? layout.size.width - layout.safeInsets.right - 16.0 - selectedSize.width : 16.0 + 44.0 + 12.0
+            self.selectedButtonNode.frame = CGRect(origin: CGPoint(x: selectedButtonX, y: self._hasGlassStyle ? 16.0 : floorToScreenPixels((navigationHeight - selectedSize.height) / 2.0) + 1.0), size: selectedSize)
             
             let isSelectionButtonVisible = count > 0 && self.controllerNode.currentDisplayMode == .all
             transition.updateAlpha(node: self.selectedButtonNode, alpha: isSelectionButtonVisible ? 1.0 : 0.0)
@@ -2640,7 +2647,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             }
             
             self.titleView.segmentsHidden = true
-            moreIsVisible = count > 0
+            moreIsVisible = usesSwappedControls || count > 0
         }
         
         let useGlassButtons = (isBack || !self.controllerNode.scrolledToTop) && !self.controllerNode.isSwitchingAssetGroup
@@ -2670,7 +2677,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         transition.updateAlpha(layer: self.controllerNode.topEdgeEffectView.layer, alpha: self.controllerNode.scrolledExactlyToTop && self.controllerNode.currentDisplayMode == .all ? 0.0 : 1.0)
         self.controllerNode.topEdgeEffectView.update(content: topEdgeColor, blur: true, alpha: 0.8, rect: topEdgeEffectFrame, edge: .top, edgeSize: topEdgeEffectFrame.height, transition: ComponentTransition(transition))
         
-        let leftControlItems: [GlassControlGroupComponent.Item] = [
+        var leftControlItems: [GlassControlGroupComponent.Item] = [
             GlassControlGroupComponent.Item(
                 id: AnyHashable(isBack ? "back" : "close"),
                 content: .icon(isBack ? "Navigation/Back" : "Navigation/Close"),
@@ -2703,7 +2710,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                         guard let self else {
                             return
                         }
-                        if let controlsView = self.buttons?.view as? GlassControlPanelComponent.View, let rightItemView = controlsView.rightItemView, let sourceView = rightItemView.itemView(id: AnyHashable("more")) {
+                        if let controlsView = self.buttons?.view as? GlassControlPanelComponent.View, let sourceView = controlsView.leftItemView?.itemView(id: AnyHashable("more")) ?? controlsView.rightItemView?.itemView(id: AnyHashable("more")) {
                             self.searchOrMorePressed(view: sourceView, gesture: nil)
                         }
                     }
@@ -2759,6 +2766,11 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                     ), at: 0)
                 }
             }
+        }
+
+        if usesSwappedControls && !isBack {
+            leftControlItems = rightControlItems
+            rightControlItems.removeAll()
         }
         
         if let buttons = self.buttons {
@@ -3251,7 +3263,13 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         self.controllerNode.containerLayoutUpdated(layout, navigationBarHeight: navigationLayout(layout: layout).navigationFrame.maxY, transition: transition)
 
         let navigationHeight = navigationLayout(layout: layout).navigationFrame.height
-        self.selectedButtonNode.frame = CGRect(origin: CGPoint(x: 16.0 + 44.0 + 12.0, y: self._hasGlassStyle ? 16.0 : floorToScreenPixels((navigationHeight - self.selectedButtonNode.frame.height) / 2.0) + 1.0), size: self.selectedButtonNode.frame.size)
+        let selectedButtonX: CGFloat
+        if case .glass = self.style, case .assets(_, .default) = self.subject, !self.hasSelectButton {
+            selectedButtonX = layout.size.width - layout.safeInsets.right - 16.0 - self.selectedButtonNode.frame.width
+        } else {
+            selectedButtonX = 16.0 + 44.0 + 12.0
+        }
+        self.selectedButtonNode.frame = CGRect(origin: CGPoint(x: selectedButtonX, y: self._hasGlassStyle ? 16.0 : floorToScreenPixels((navigationHeight - self.selectedButtonNode.frame.height) / 2.0) + 1.0), size: self.selectedButtonNode.frame.size)
     }
     
     public func dismissAnimated() {
