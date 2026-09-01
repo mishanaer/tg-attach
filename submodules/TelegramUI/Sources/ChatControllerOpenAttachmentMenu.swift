@@ -48,6 +48,84 @@ extension ChatControllerImpl {
         case gift
     }
 
+    func enqueueQuickAttachAsset(
+        _ asset: PHAsset,
+        getAnimatedTransitionSource: @escaping (String) -> UIView?,
+        completion: @escaping () -> Void
+    ) {
+        guard asset.mediaType == .image else {
+            self.presentQuickAttachPreparationError()
+            return
+        }
+
+        let inputText = self.presentationInterfaceState.interfaceState.effectiveInputState.inputText
+        let settings = self.context.sharedContext.accountManager.transaction { transaction -> GeneratedMediaStoreSettings in
+            let entry = transaction.getSharedData(ApplicationSpecificSharedDataKeys.generatedMediaStoreSettings)?.get(GeneratedMediaStoreSettings.self)
+            return entry ?? GeneratedMediaStoreSettings.defaultSettings
+        }
+
+        let _ = (settings
+        |> deliverOnMainQueue).startStandalone(next: { [weak self] settings in
+            guard let self else {
+                return
+            }
+            guard let mediaAsset = TGMediaAsset(phAsset: asset),
+                  let selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: 1) else {
+                self.presentQuickAttachPreparationError()
+                return
+            }
+            let editingContext = TGMediaEditingContext()
+
+            if UserDefaults.standard.bool(forKey: "TG_photoHighQuality_v0") {
+                editingContext.setHighQualityPhoto(true)
+            }
+            editingContext.sendPaidMessageStars = self.presentationInterfaceState.sendPaidMessageStars?.value ?? 0
+            if !inputText.string.isEmpty {
+                editingContext.setForcedCaption(inputText)
+            }
+
+            guard let signals = TGMediaAssetsController.resultSignals(
+                for: selectionContext,
+                editingContext: editingContext,
+                intent: TGMediaAssetsControllerSendMediaIntent,
+                currentItem: mediaAsset,
+                storeAssets: true,
+                convertToJpeg: false,
+                descriptionGenerator: legacyAssetPickerItemGenerator(),
+                saveEditedPhotos: settings.storeEditedPhotos
+            ) else {
+                self.presentQuickAttachPreparationError()
+                return
+            }
+
+            if !inputText.string.isEmpty {
+                self.clearInputText()
+            }
+            self.enqueueMediaMessages(
+                fromGallery: false,
+                signals: signals,
+                silentPosting: false,
+                getAnimatedTransitionSource: getAnimatedTransitionSource,
+                completion: completion
+            )
+        })
+    }
+
+    private func presentQuickAttachPreparationError() {
+        self.present(
+            textAlertController(
+                context: self.context,
+                updatedPresentationData: self.updatedPresentationData,
+                title: nil,
+                text: self.presentationData.strings.Login_UnknownError,
+                actions: [
+                    TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})
+                ]
+            ),
+            in: .window(.root)
+        )
+    }
+
     func presentAttachmentMenu(subject: AttachMenuSubject) {
         Task { @MainActor [weak self] in
             guard let self else {
@@ -2023,7 +2101,7 @@ extension ChatControllerImpl {
         }) as? TGCaptionPanelView
     }
 
-    func openCamera(cameraView: TGAttachmentCameraView? = nil) {
+    func openCamera(cameraView: TGAttachmentCameraView? = nil, dismissedWithResult: @escaping () -> Void = {}, finishedTransitionOut: @escaping () -> Void = {}) {
         let _ = (self.context.sharedContext.accountManager.transaction { transaction -> GeneratedMediaStoreSettings in
             let entry = transaction.getSharedData(ApplicationSpecificSharedDataKeys.generatedMediaStoreSettings)?.get(GeneratedMediaStoreSettings.self)
             return entry ?? GeneratedMediaStoreSettings.defaultSettings
@@ -2113,9 +2191,10 @@ extension ChatControllerImpl {
                 return makeMediaPickerPhotoToolbarView(context: context, backButton: backButton, doneButton: doneButton, solidBackground: solidBackground, hasSendStarsButton: hasSendStarsButton)
             }, dismissedWithResult: { [weak self] in
                 self?.attachmentController?.dismiss(animated: false, completion: nil)
+                dismissedWithResult()
             }, finishedTransitionIn: { [weak self] in
                 self?.attachmentController?.scrollToTop?()
-            })
+            }, finishedTransitionOut: finishedTransitionOut)
         })
     }
 

@@ -274,8 +274,11 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     private let sendAsCloseIconView: UIImageView
     
     public let attachmentButton: HighlightTrackingButton
+    public let attachmentButtonContextSource: ContextControllerSourceView
     public let attachmentButtonBackground: GlassBackgroundView
     private let attachmentButtonIcon: UIImageView
+    private let quickAttachCancelIcon: UIImageView
+    private var isQuickAttachActive = false
     private var commentsButtonIcon: RasterizedCompositionMonochromeLayer?
     private var commentsButtonCenterIcon: UIImageView?
     private var commentsButtonContentsLayer: RasterizedCompositionImageLayer?
@@ -304,6 +307,19 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     }
     private var contextPanel: (container: UIView, mask: UIImageView, panel: ChatInputContextPanelNode)?
     private var mediaPreviewPanelNode: ChatRecordingPreviewInputPanelNodeImpl?
+
+    private let quickAttachPreviewContainer: UIView
+    private let quickAttachPreviewImageView: UIImageView
+    private let quickAttachPreviewRemoveButton: UIButton
+    public private(set) var quickAttachPreviewImage: UIImage?
+
+    private enum QuickAttachPreviewLayout {
+        static let side: CGFloat = 90.0
+        static let inset: CGFloat = 8.0
+        static let rowHeight: CGFloat = side + inset
+        static let removeSide: CGFloat = 22.0
+        static let removeInset: CGFloat = 4.0
+    }
     
     private var accessoryItemButtons: [(ChatTextInputAccessoryItem, AccessoryItemIconButton)] = []
     
@@ -325,6 +341,12 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     
     public var displayAttachmentMenu: () -> Void = { }
     public var sendMessage: () -> Void = { }
+    public var removeQuickAttach: () -> Void = { }
+    public var isQuickAttachGestureEnabled = false {
+        didSet {
+            self.attachmentButtonContextSource.isGestureEnabled = self.isQuickAttachGestureEnabled
+        }
+    }
     public var paste: (ChatTextInputPanelPasteData) -> Void = { _ in }
     public var updateHeight: (Bool) -> Void = { _ in }
     public var toggleExpandMediaInput: (() -> Void)?
@@ -720,6 +742,10 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.glassBackgroundContainer = GlassBackgroundContainerView()
         
         self.textInputContainerBackgroundView = GlassBackgroundView(frame: CGRect())
+
+        self.quickAttachPreviewContainer = UIView(frame: .zero)
+        self.quickAttachPreviewImageView = UIImageView(frame: .zero)
+        self.quickAttachPreviewRemoveButton = UIButton(type: .custom)
         
         self.accessoryPanelContainer = UIView()
         self.accessoryPanelContainer.clipsToBounds = true
@@ -778,14 +804,26 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.attachmentButton.accessibilityLabel = presentationInterfaceState.strings.VoiceOver_AttachMedia
         self.attachmentButton.accessibilityTraits = [.button]
         self.attachmentButton.isAccessibilityElement = true
+
+        self.attachmentButtonContextSource = ContextControllerSourceView()
+        self.attachmentButtonContextSource.beginDelay = 0.12
         
         self.attachmentButtonBackground = GlassBackgroundView(frame: CGRect())
+        self.attachmentButtonContextSource.addSubview(self.attachmentButtonBackground)
         self.attachmentButtonBackground.contentView.addSubview(self.attachmentButton)
         
         self.attachmentButtonIcon = UIImageView()
         self.attachmentButtonIcon.isUserInteractionEnabled = false
         self.attachmentButtonIcon.contentMode = .center
         self.attachmentButtonBackground.contentView.addSubview(self.attachmentButtonIcon)
+
+        self.quickAttachCancelIcon = UIImageView(image: UIImage(bundleImageName: "Navigation/Close")?.withRenderingMode(.alwaysTemplate))
+        self.quickAttachCancelIcon.isUserInteractionEnabled = false
+        self.quickAttachCancelIcon.contentMode = .center
+        self.quickAttachCancelIcon.alpha = 0.0
+        self.quickAttachCancelIcon.transform = CGAffineTransform(rotationAngle: -.pi * 0.5).scaledBy(x: 0.5, y: 0.5)
+        self.attachmentButtonBackground.contentView.addSubview(self.quickAttachCancelIcon)
+        self.attachmentButtonContextSource.targetViewForActivationProgress = self.attachmentButtonBackground.contentView
         
         self.attachmentButtonDisabledNode = HighlightableButtonNode()
         self.searchLayoutClearButton = HighlightTrackingButton()
@@ -917,14 +955,18 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         
         self.attachmentButton.addTarget(self, action: #selector(self.attachmentButtonPressed), for: .touchUpInside)
         self.attachmentButton.highligthedChanged = { [weak self] highlighted in
-            if let self {
-                if highlighted {
-                    self.attachmentButtonIcon.layer.removeAnimation(forKey: "opacity")
-                    self.attachmentButtonIcon.alpha = 0.4
-                } else {
-                    self.attachmentButtonIcon.alpha = 1.0
-                    self.attachmentButtonIcon.layer.animateAlpha(from: 0.4, to: 1.0, duration: 0.2)
-                }
+            guard let self else {
+                return
+            }
+            if self.isQuickAttachActive {
+                self.attachmentButtonIcon.layer.removeAnimation(forKey: "opacity")
+                self.attachmentButtonIcon.alpha = 0.0
+            } else if highlighted {
+                self.attachmentButtonIcon.layer.removeAnimation(forKey: "opacity")
+                self.attachmentButtonIcon.alpha = 0.4
+            } else {
+                self.attachmentButtonIcon.alpha = 1.0
+                self.attachmentButtonIcon.layer.animateAlpha(from: 0.4, to: 1.0, duration: 0.2)
             }
         }
         self.attachmentButtonDisabledNode.addTarget(self, action: #selector(self.attachmentButtonPressed), forControlEvents: .touchUpInside)
@@ -1032,6 +1074,23 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.glassBackgroundContainer.contentView.addSubview(self.textInputContainerBackgroundView)
         
         self.textInputContainerBackgroundView.contentView.addSubview(self.accessoryPanelContainer)
+        self.quickAttachPreviewContainer.alpha = 0.0
+        self.quickAttachPreviewContainer.isAccessibilityElement = false
+        self.quickAttachPreviewContainer.accessibilityLabel = "Attached photo"
+        self.quickAttachPreviewImageView.contentMode = .scaleAspectFill
+        self.quickAttachPreviewImageView.clipsToBounds = true
+        self.quickAttachPreviewImageView.layer.cornerRadius = 10.0
+        self.quickAttachPreviewImageView.layer.cornerCurve = .continuous
+        self.quickAttachPreviewContainer.addSubview(self.quickAttachPreviewImageView)
+        self.quickAttachPreviewRemoveButton.backgroundColor = UIColor(white: 0.0, alpha: 0.4)
+        self.quickAttachPreviewRemoveButton.layer.cornerRadius = 11.0
+        self.quickAttachPreviewRemoveButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10.0, weight: .bold)), for: .normal)
+        self.quickAttachPreviewRemoveButton.tintColor = .white
+        self.quickAttachPreviewRemoveButton.accessibilityLabel = "Remove attached photo"
+        self.quickAttachPreviewRemoveButton.accessibilityIdentifier = "quickAttach.preview.remove"
+        self.quickAttachPreviewRemoveButton.addTarget(self, action: #selector(self.removeQuickAttachPreview), for: .touchUpInside)
+        self.quickAttachPreviewContainer.addSubview(self.quickAttachPreviewRemoveButton)
+        self.textInputContainerBackgroundView.contentView.addSubview(self.quickAttachPreviewContainer)
         self.textInputContainerBackgroundView.contentView.addSubview(self.textPlaceholderNode.view)
         self.textInputContainerBackgroundView.contentView.addSubview(self.textInputNodeClippingContainer)
         
@@ -1047,7 +1106,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         self.textInputContainerBackgroundView.contentView.addSubview(self.sendAsAvatarButtonNode.view)
         
         self.glassBackgroundContainer.contentView.addSubview(self.menuButton.view)
-        self.glassBackgroundContainer.contentView.addSubview(self.attachmentButtonBackground)
+        self.glassBackgroundContainer.contentView.addSubview(self.attachmentButtonContextSource)
         self.glassBackgroundContainer.contentView.addSubview(self.attachmentButtonDisabledNode.view)
         
         self.glassBackgroundContainer.contentView.addSubview(self.startButton.view)
@@ -1733,7 +1792,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                 isMediaEnabled = true
             }
         }
-        hasMediaDraft = interfaceState.interfaceState.mediaDraftState != nil
+        hasMediaDraft = interfaceState.interfaceState.mediaDraftState != nil || self.quickAttachPreviewImage != nil
         
         let hasForward = interfaceState.interfaceState.forwardMessageIds != nil
         
@@ -1774,7 +1833,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             attachmentButtonAlpha = 0.0
         }
         
-        transition.updateAlpha(layer: self.attachmentButtonBackground.layer, alpha: attachmentButtonAlpha)
+        transition.updateAlpha(layer: self.attachmentButtonContextSource.layer, alpha: attachmentButtonAlpha)
+        self.attachmentButtonContextSource.isGestureEnabled = self.isQuickAttachGestureEnabled && isMediaEnabled && !isRecording
         self.attachmentButton.isEnabled = isMediaEnabled && !isRecording
         self.attachmentButton.accessibilityTraits = (!isSlowmodeActive || isMediaEnabled) ? [.button] : [.button, .notEnabled]
         self.attachmentButtonDisabledNode.isHidden = !isSlowmodeActive || isMediaEnabled
@@ -2505,7 +2565,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         
         self.mediaActionButtons.micButton.updateMode(mode: interfaceState.interfaceState.mediaRecordingMode, animated: transition.isAnimated)
         
-        self.updateActionButtons(hasText: inputHasText, transition: transition)
+        self.updateActionButtons(hasText: inputHasText || self.quickAttachPreviewImage != nil, transition: transition)
         
         var mediaActionButtonsSize = CGSize(width: 40.0, height: 40.0)
         var sendActionButtonsSize = CGSize(width: 40.0, height: 40.0)
@@ -3092,6 +3152,24 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             
             contentHeight += accessoryPanelSize.height
         }
+
+        if self.quickAttachPreviewImage != nil {
+            let previewFrame = CGRect(
+                x: QuickAttachPreviewLayout.inset,
+                y: contentHeight + QuickAttachPreviewLayout.inset,
+                width: QuickAttachPreviewLayout.side,
+                height: QuickAttachPreviewLayout.side
+            )
+            transition.updateFrame(view: self.quickAttachPreviewContainer, frame: previewFrame)
+            self.quickAttachPreviewImageView.frame = self.quickAttachPreviewContainer.bounds
+            self.quickAttachPreviewRemoveButton.frame = CGRect(
+                x: QuickAttachPreviewLayout.side - QuickAttachPreviewLayout.removeSide - QuickAttachPreviewLayout.removeInset,
+                y: QuickAttachPreviewLayout.removeInset,
+                width: QuickAttachPreviewLayout.removeSide,
+                height: QuickAttachPreviewLayout.removeSide
+            )
+            contentHeight += QuickAttachPreviewLayout.rowHeight
+        }
         
         if let _ = interfaceState.interfaceState.mediaDraftState {
             let mediaPreviewPanelFrame = CGRect(origin: CGPoint(x: 0.0, y: contentHeight), size: CGSize(width: textInputWidth - effectiveActionButtonsSize.width - 8.0, height: 40.0))
@@ -3560,7 +3638,9 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         attachmentButtonX += 40.0 + 6.0
         self.attachmentButtonBackground.update(size: attachmentButtonFrame.size, cornerRadius: 40.0 * 0.5, isDark: interfaceState.theme.overallDarkAppearance, tintColor: defaultGlassTintColor, isInteractive: true, transition: ComponentTransition(transition))
 
-        transition.updateFrame(layer: self.attachmentButtonBackground.layer, frame: attachmentButtonFrame)
+        transition.updateFrame(view: self.attachmentButtonContextSource, frame: attachmentButtonFrame)
+        transition.updateFrame(layer: self.attachmentButtonBackground.layer, frame: CGRect(origin: .zero, size: attachmentButtonFrame.size))
+        self.attachmentButtonContextSource.targetNodeForActivationProgressContentRect = CGRect(x: 0.0, y: attachmentButtonFrame.height - 40.0, width: 40.0, height: 40.0)
         // + tap target + disabled overlay + icon are pinned to the BOTTOM 40x40 slot of the capsule.
         transition.updateFrame(layer: self.attachmentButton.layer, frame: CGRect(origin: CGPoint(x: 0.0, y: attachmentButtonFrame.height - 40.0), size: CGSize(width: 40.0, height: 40.0)))
         transition.updateFrame(node: self.attachmentButtonDisabledNode, frame: CGRect(origin: CGPoint(x: attachmentButtonFrame.minX, y: attachmentButtonFrame.maxY - 40.0), size: CGSize(width: 40.0, height: 40.0)))
@@ -3568,6 +3648,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         if let _ = self.attachmentButtonIcon.image {
             transition.updateFrame(view: self.attachmentButtonIcon, frame: CGRect(origin: CGPoint(x: 0.0, y: attachmentButtonFrame.height - 40.0), size: CGSize(width: 40, height: 40)))
         }
+        transition.updateFrame(view: self.quickAttachCancelIcon, frame: CGRect(origin: CGPoint(x: 0.0, y: attachmentButtonFrame.height - 40.0), size: CGSize(width: 40, height: 40)))
+        self.quickAttachCancelIcon.tintColor = self.attachmentButtonIcon.tintColor
 
         // AI button in the TOP 40x40 slot of the capsule (fades in with the 3-line rule).
         if self.isAIEnabled {
@@ -5587,6 +5669,83 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     @objc public func editableTextNodeShouldPaste(_ editableTextNode: ASEditableTextNode) -> Bool {
         return self.chatInputTextNodeShouldPaste()
     }
+
+    public func prepareQuickAttachPreview(image: UIImage, in coordinateView: UIView) -> CGRect {
+        let wasEmpty = self.quickAttachPreviewImage == nil
+        let currentBackgroundFrame = self.textInputContainerBackgroundView.convert(self.textInputContainerBackgroundView.bounds, to: coordinateView)
+        let accessoryHeight = self.accessoryPanel?.view.view?.bounds.height ?? 0.0
+        self.quickAttachPreviewImage = image
+        self.quickAttachPreviewImageView.image = image
+        self.quickAttachPreviewContainer.alpha = 0.0
+        self.quickAttachPreviewRemoveButton.alpha = 0.0
+        self.updateHeight(true)
+
+        return CGRect(
+            x: currentBackgroundFrame.minX + QuickAttachPreviewLayout.inset,
+            y: currentBackgroundFrame.minY - (wasEmpty ? QuickAttachPreviewLayout.rowHeight : 0.0) + accessoryHeight + QuickAttachPreviewLayout.inset,
+            width: QuickAttachPreviewLayout.side,
+            height: QuickAttachPreviewLayout.side
+        )
+    }
+
+    public func setQuickAttachActive(_ active: Bool, animated: Bool) {
+        self.isQuickAttachActive = active
+        let changes = {
+            self.attachmentButtonIcon.alpha = active ? 0.0 : 1.0
+            self.attachmentButtonIcon.transform = active ? CGAffineTransform(rotationAngle: .pi * 0.5).scaledBy(x: 0.5, y: 0.5) : .identity
+            self.quickAttachCancelIcon.alpha = active ? 1.0 : 0.0
+            self.quickAttachCancelIcon.transform = active ? .identity : CGAffineTransform(rotationAngle: -.pi * 0.5).scaledBy(x: 0.5, y: 0.5)
+        }
+        self.attachmentButtonIcon.layer.removeAllAnimations()
+        self.quickAttachCancelIcon.layer.removeAllAnimations()
+        if animated {
+            UIView.animate(withDuration: 0.3, delay: 0.0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.0, options: [.beginFromCurrentState, .allowUserInteraction], animations: changes)
+        } else {
+            changes()
+        }
+    }
+
+    public func revealQuickAttachPreview(image: UIImage) {
+        self.quickAttachPreviewImage = image
+        self.quickAttachPreviewImageView.image = image
+        self.quickAttachPreviewContainer.alpha = 1.0
+        self.quickAttachPreviewRemoveButton.alpha = 1.0
+    }
+
+    public func quickAttachPreviewTransitionView() -> UIView? {
+        guard self.quickAttachPreviewImage != nil, let view = self.quickAttachPreviewImageView.layer.snapshotContentTreeAsView(unhide: true) else {
+            return nil
+        }
+        view.frame = self.quickAttachPreviewImageView.convert(self.quickAttachPreviewImageView.bounds, to: nil)
+        self.quickAttachPreviewContainer.alpha = 0.0
+        return view
+    }
+
+    public func clearQuickAttachPreview(animated: Bool) {
+        guard self.quickAttachPreviewImage != nil else {
+            return
+        }
+        self.quickAttachPreviewImage = nil
+        let completion: (Bool) -> Void = { [weak self] _ in
+            self?.quickAttachPreviewImageView.image = nil
+        }
+        if animated {
+            UIView.animate(withDuration: 0.07, animations: {
+                self.quickAttachPreviewContainer.alpha = 0.0
+                self.quickAttachPreviewRemoveButton.alpha = 0.0
+            }, completion: completion)
+        } else {
+            self.quickAttachPreviewContainer.alpha = 0.0
+            self.quickAttachPreviewRemoveButton.alpha = 0.0
+            completion(true)
+        }
+        self.updateHeight(animated)
+    }
+
+    @objc private func removeQuickAttachPreview() {
+        self.hapticFeedback.impact(.light)
+        self.removeQuickAttach()
+    }
     
     @objc func sendButtonPressed() {
         if let richTextInputNode = self.richTextInputNode, let presentationInterfaceState = self.presentationInterfaceState, let editMessage = presentationInterfaceState.interfaceState.editMessage, let inputTextMaxLength = editMessage.inputTextMaxLength {
@@ -5830,8 +5989,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     }
     
     public func frameForAttachmentButton() -> CGRect? {
-        if !self.attachmentButtonBackground.alpha.isZero {
-            return self.attachmentButtonBackground.frame.insetBy(dx: 0.0, dy: -4.0).offsetBy(dx: 0.0, dy: 0.0)
+        if !self.attachmentButtonContextSource.alpha.isZero {
+            return self.attachmentButtonContextSource.frame.insetBy(dx: 0.0, dy: -4.0).offsetBy(dx: 0.0, dy: 0.0)
         }
         return nil
     }

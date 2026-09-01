@@ -283,6 +283,9 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
     private var disappearingNode: ChatInputNode?
     
     private(set) var textInputPanelNode: ChatTextInputPanelNode?
+    private var quickAttachOverlay: QuickAttachFlowOverlayView?
+    private var quickAttachBackdrop: UIVisualEffectView?
+    private var quickAttachSelection: QuickAttachMediaItem?
     
     private var inputMediaNodeData: ChatEntityKeyboardInputNode.InputData?
     private var inputMediaNodeDataPromise = Promise<ChatEntityKeyboardInputNode.InputData>()
@@ -733,15 +736,27 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 }
                 source = .custom(messages: messages, messageId: MessageId(peerId: PeerId(0), namespace: 0, id: 0), quote: nil, isSavedMusic: false, canReorder: false, loadMore: nil)
             }
-        } else if QuickAttachDemo.isEnabled && context.account.peerId == QuickAttachDemo.accountPeerId, let peerId = chatLocation.peerId, let messageIds = QuickAttachDemo.localDialogMessageIds(peerId: peerId) {
-            let messages = context.account.postbox.messagesAtIds(messageIds)
-            |> map { messages -> ([Message], Int32, Bool) in
-                let messages = messages.sorted(by: { lhs, rhs in
-                    return lhs.index > rhs.index
-                })
+        } else if QuickAttachDemo.isEnabled && context.account.peerId == QuickAttachDemo.accountPeerId, let peerId = chatLocation.peerId, QuickAttachDemo.localDialogMessageIds(peerId: peerId) != nil {
+            let messages = context.account.postbox.aroundMessageHistoryViewForLocation(
+                .peer(peerId: peerId, threadId: nil),
+                anchor: .upperBound,
+                ignoreMessagesInTimestampRange: nil,
+                ignoreMessageIds: Set(),
+                count: 100,
+                trackHoles: false,
+                clipHoles: false,
+                fixedCombinedReadStates: nil,
+                topTaggedMessageIdNamespaces: Set(),
+                tag: nil,
+                appendMessagesFromTheSameGroup: false,
+                namespaces: .not(Namespaces.Message.allNonRegular),
+                orderStatistics: []
+            )
+            |> map { view, _, _ -> ([Message], Int32, Bool) in
+                let messages = view.entries.reversed().map(\.message)
                 return (messages, Int32(messages.count), false)
             }
-            source = .custom(messages: messages, messageId: messageIds.last, quote: nil, isSavedMusic: false, canReorder: false, loadMore: nil)
+            source = .custom(messages: messages, messageId: nil, quote: nil, isSavedMusic: false, canReorder: false, loadMore: nil)
         } else if case .customChatContents = chatLocation {
             if case let .customChatContents(customChatContents) = subject {
                 source = .customView(historyView: customChatContents.historyView)
@@ -977,6 +992,9 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         
         self.textInputPanelNode?.sendMessage = { [weak self] in
             if let self, let controller = self.controller {
+                if self.sendQuickAttachSelectionIfNeeded(controller: controller) {
+                    return
+                }
                 if case .scheduledMessages = self.chatPresentationInterfaceState.subject, self.chatPresentationInterfaceState.editMessageState == nil {
                     self.controllerInteraction.scheduleCurrentMessage(nil)
                 } else {
@@ -1010,6 +1028,23 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         }
         self.textInputPanelNode?.displayAttachmentMenu = { [weak self] in
             self?.displayAttachmentMenu()
+        }
+        if QuickAttachDemo.isEnabled, let textInputPanelNode = self.textInputPanelNode {
+            QuickAttachRecentPhotosProvider.shared.prefetch(count: 3)
+            textInputPanelNode.isQuickAttachGestureEnabled = true
+            textInputPanelNode.attachmentButtonContextSource.shouldBegin = { [weak self, weak source = textInputPanelNode.attachmentButtonContextSource] point in
+                guard let self, let source else {
+                    return false
+                }
+                let buttonRect = CGRect(x: 0.0, y: source.bounds.height - 40.0, width: 40.0, height: 40.0)
+                return buttonRect.contains(point) && self.canQuickAttachPhotos()
+            }
+            textInputPanelNode.attachmentButtonContextSource.activated = { [weak self] gesture, _ in
+                self?.presentQuickAttach(gesture: gesture)
+            }
+            textInputPanelNode.removeQuickAttach = { [weak self] in
+                self?.clearQuickAttachSelection(animated: true)
+            }
         }
         self.textInputPanelNode?.updateActivity = { [weak self] in
             self?.updateTypingActivity(true)
@@ -4064,6 +4099,182 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         }
         
         self.textInputPanelNode?.loadTextInputNodeIfNeeded()
+    }
+
+    private func presentQuickAttach(gesture: ContextGesture) {
+        guard self.quickAttachOverlay == nil, let textInputPanelNode = self.textInputPanelNode else {
+            gesture.cancel()
+            return
+        }
+        QuickAttachRecentPhotosProvider.shared.prefetch(count: 3, requestAccess: true)
+        self.view.endEditing(false)
+
+        let state = self.chatPresentationInterfaceState
+        let containerView = self.wrappingNode.contentNode.view
+        let backdrop = UIVisualEffectView(effect: nil)
+        backdrop.frame = containerView.bounds
+        backdrop.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        containerView.insertSubview(backdrop, belowSubview: self.inputPanelContainerNode.view)
+        self.quickAttachBackdrop = backdrop
+
+        let overlay = QuickAttachFlowOverlayView(
+            frame: containerView.bounds,
+            isDark: state.theme.overallDarkAppearance
+        )
+        overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        containerView.addSubview(overlay)
+        self.quickAttachOverlay = overlay
+
+        let sourceView = textInputPanelNode.attachmentButtonContextSource
+        let sourceRect = sourceView.convert(sourceView.bounds, to: containerView)
+        textInputPanelNode.setQuickAttachActive(true, animated: true)
+        overlay.present(items: Array(QuickAttachRecentPhotosProvider.shared.items.prefix(3)), from: sourceRect)
+
+        UIView.animate(withDuration: 0.16) {
+            backdrop.effect = UIBlurEffect(style: state.theme.overallDarkAppearance ? .systemUltraThinMaterialDark : .systemUltraThinMaterialLight)
+        }
+
+        gesture.externalUpdated = { [weak self, weak gesture] view, point in
+            guard let self, let overlay = self.quickAttachOverlay else {
+                gesture?.externalUpdated = nil
+                return
+            }
+            overlay.updateTracking(location: overlay.convert(point, from: view))
+        }
+        gesture.externalEnded = { [weak self, weak gesture] viewAndPoint in
+            gesture?.externalUpdated = nil
+            gesture?.externalEnded = nil
+            guard let self, let overlay = self.quickAttachOverlay, let (view, point) = viewAndPoint else {
+                self?.cancelQuickAttach()
+                return
+            }
+            self.finishQuickAttach(location: overlay.convert(point, from: view))
+        }
+    }
+
+    private func finishQuickAttach(location: CGPoint) {
+        guard let overlay = self.quickAttachOverlay, let textInputPanelNode = self.textInputPanelNode else {
+            return
+        }
+        guard let selectedIndex = overlay.finishTracking(location: location) else {
+            self.cancelQuickAttach()
+            return
+        }
+        if selectedIndex == 0, let cameraView = overlay.cameraView {
+            guard let controller = self.controller else {
+                self.cancelQuickAttach()
+                return
+            }
+            overlay.prepareForCameraTransition()
+            controller.openCamera(cameraView: cameraView, dismissedWithResult: { [weak self, weak overlay] in
+                guard let self, let overlay, self.quickAttachOverlay === overlay else {
+                    return
+                }
+                overlay.removeFromSuperview()
+                self.completeQuickAttachDismissal()
+            }, finishedTransitionOut: { [weak self, weak overlay] in
+                guard let self, let overlay, self.quickAttachOverlay === overlay else {
+                    return
+                }
+                self.beginQuickAttachBackdropDismissal()
+                overlay.dismiss(selectedIndex: nil, targetRect: nil) { [weak self, weak overlay] in
+                    guard let self, let overlay, self.quickAttachOverlay === overlay else {
+                        return
+                    }
+                    self.completeQuickAttachDismissal()
+                }
+            })
+            return
+        }
+
+        guard let item = overlay.mediaItem(atSelectedIndex: selectedIndex), item.asset != nil else {
+            self.cancelQuickAttach()
+            return
+        }
+        self.quickAttachSelection = item
+        let previousTransition = self.overrideUpdateTextInputHeightTransition
+        self.overrideUpdateTextInputHeightTransition = .animated(duration: 0.32, curve: .spring)
+        let targetRect = textInputPanelNode.prepareQuickAttachPreview(image: item.image, in: overlay)
+        self.overrideUpdateTextInputHeightTransition = previousTransition
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        self.beginQuickAttachBackdropDismissal()
+        overlay.dismiss(selectedIndex: selectedIndex, targetRect: targetRect) { [weak self, weak textInputPanelNode] in
+            guard let self else {
+                return
+            }
+            self.completeQuickAttachDismissal()
+            textInputPanelNode?.revealQuickAttachPreview(image: item.image)
+        }
+    }
+
+    private func cancelQuickAttach() {
+        guard let overlay = self.quickAttachOverlay else {
+            return
+        }
+        self.beginQuickAttachBackdropDismissal()
+        overlay.dismiss(selectedIndex: nil, targetRect: nil) { [weak self] in
+            self?.completeQuickAttachDismissal()
+        }
+    }
+
+    private func beginQuickAttachBackdropDismissal() {
+        guard let backdrop = self.quickAttachBackdrop else {
+            return
+        }
+        self.quickAttachBackdrop = nil
+        UIView.animate(withDuration: 0.16, animations: {
+            backdrop.effect = nil
+        }, completion: { _ in
+            backdrop.removeFromSuperview()
+        })
+    }
+
+    private func completeQuickAttachDismissal() {
+        self.quickAttachOverlay = nil
+        self.textInputPanelNode?.setQuickAttachActive(false, animated: true)
+        self.beginQuickAttachBackdropDismissal()
+    }
+
+    private func clearQuickAttachSelection(animated: Bool) {
+        guard self.quickAttachSelection != nil else {
+            return
+        }
+        self.quickAttachSelection = nil
+        let previousTransition = self.overrideUpdateTextInputHeightTransition
+        self.overrideUpdateTextInputHeightTransition = animated ? .animated(duration: 0.32, curve: .spring) : .immediate
+        self.textInputPanelNode?.clearQuickAttachPreview(animated: animated)
+        self.overrideUpdateTextInputHeightTransition = previousTransition
+    }
+
+    private func sendQuickAttachSelectionIfNeeded(controller: ChatControllerImpl) -> Bool {
+        guard let selection = self.quickAttachSelection, let asset = selection.asset else {
+            return false
+        }
+        let assetIdentifier = asset.localIdentifier
+        controller.enqueueQuickAttachAsset(asset, getAnimatedTransitionSource: { [weak self] identifier in
+            guard identifier == assetIdentifier else {
+                return nil
+            }
+            return self?.textInputPanelNode?.quickAttachPreviewTransitionView()
+        }, completion: { [weak self] in
+            self?.clearQuickAttachSelection(animated: true)
+        })
+        return true
+    }
+
+    private func canQuickAttachPhotos() -> Bool {
+        guard QuickAttachDemo.isEnabled else {
+            return false
+        }
+        let canByPassRestrictions = canBypassRestrictions(chatPresentationInterfaceState: self.chatPresentationInterfaceState)
+        if let peer = self.chatPresentationInterfaceState.renderedPeer?.peer {
+            if let channel = peer as? TelegramChannel {
+                return channel.hasBannedPermission(.banSendPhotos, ignoreDefault: canByPassRestrictions) == nil
+            } else if let group = peer as? TelegramGroup {
+                return !group.hasBannedPermission(.banSendPhotos)
+            }
+        }
+        return true
     }
     
     func currentInputPanelFrame() -> CGRect? {
