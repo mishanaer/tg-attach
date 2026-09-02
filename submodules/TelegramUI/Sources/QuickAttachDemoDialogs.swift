@@ -110,6 +110,47 @@ private func makeQuickAttachDemoUser(id: PeerId, firstName: String, lastName: St
 }
 
 extension QuickAttachDemo {
+    static func isEditableMessage(_ message: EngineRawMessage) -> Bool {
+        return isEnabled
+            && localDialogMessageIds(peerId: message.id.peerId) != nil
+            && !message.flags.contains(.Incoming)
+            && message.author?.id == accountPeerId
+    }
+
+    static func editLocalMessage(postbox: Postbox, messageId: MessageId, text: String, entities: TextEntitiesMessageAttribute?, richText: RichTextMessageAttribute?) -> Signal<Void, NoError> {
+        return postbox.transaction { transaction -> Void in
+            transaction.updateMessage(messageId, update: { currentMessage in
+                var attributes = currentMessage.attributes.filter {
+                    !($0 is TextEntitiesMessageAttribute) && !($0 is RichTextMessageAttribute) && !($0 is EditedMessageAttribute)
+                }
+                if let entities {
+                    attributes.append(entities)
+                }
+                if let richText {
+                    attributes.append(richText)
+                }
+                attributes.append(EditedMessageAttribute(date: Int32(Date().timeIntervalSince1970), isHidden: false))
+                return .update(StoreMessage(
+                    id: currentMessage.id,
+                    customStableId: nil,
+                    globallyUniqueId: currentMessage.globallyUniqueId,
+                    groupingKey: currentMessage.groupingKey,
+                    threadId: currentMessage.threadId,
+                    timestamp: currentMessage.timestamp,
+                    flags: StoreMessageFlags(currentMessage.flags),
+                    tags: currentMessage.tags,
+                    globalTags: currentMessage.globalTags,
+                    localTags: currentMessage.localTags,
+                    forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init),
+                    authorId: currentMessage.author?.id,
+                    text: text,
+                    attributes: attributes,
+                    media: currentMessage.media
+                ))
+            })
+        }
+    }
+
     static func locallyAcknowledgedMessages(postbox: Postbox, messages: [Message]) -> Signal<[Message], NoError> {
         let outgoingPendingFlags: MessageFlags = [.Unsent, .Failed, .Sending]
         let displayedMessages = messages.map { message -> Message in

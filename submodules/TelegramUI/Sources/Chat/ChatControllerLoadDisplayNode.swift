@@ -2305,7 +2305,17 @@ extension ChatControllerImpl {
 
                             do {
                                 if currentMessage.text != text.string || currentEntities != entities || currentRichText != nil || richText != nil || updatingMedia || webpagePreviewAttribute != currentWebpagePreviewAttribute || disableUrlPreview {
-                                    strongSelf.context.account.pendingUpdateMessageManager.add(messageId: editMessage.messageId, text: richText != nil ? "" : text.string, media: media, entities: richText != nil ? nil : entitiesAttribute, richText: richText, inlineStickers: inlineStickers, webpagePreviewAttribute: webpagePreviewAttribute, invertMediaAttribute: invertedMediaAttribute, disableUrlPreview: disableUrlPreview)
+                                    if QuickAttachDemo.isEditableMessage(currentMessage) {
+                                        let _ = QuickAttachDemo.editLocalMessage(
+                                            postbox: strongSelf.context.account.postbox,
+                                            messageId: editMessage.messageId,
+                                            text: richText != nil ? "" : text.string,
+                                            entities: richText != nil ? nil : entitiesAttribute,
+                                            richText: richText
+                                        ).startStandalone()
+                                    } else {
+                                        strongSelf.context.account.pendingUpdateMessageManager.add(messageId: editMessage.messageId, text: richText != nil ? "" : text.string, media: media, entities: richText != nil ? nil : entitiesAttribute, richText: richText, inlineStickers: inlineStickers, webpagePreviewAttribute: webpagePreviewAttribute, invertMediaAttribute: invertedMediaAttribute, disableUrlPreview: disableUrlPreview)
+                                    }
                                 }
                             }
                         }

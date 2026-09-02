@@ -56,6 +56,7 @@ func canEditMessage(context: AccountContext, limitsConfiguration: EngineConfigur
 private func canEditMessage(accountPeerId: EnginePeer.Id, limitsConfiguration: EngineConfiguration.Limits, message: EngineRawMessage, reschedule: Bool = false) -> Bool {
     var hasEditRights = false
     var unlimitedInterval = reschedule
+    let isQuickAttachDemoLocalMessage = message.id.namespace == Namespaces.Message.Local && QuickAttachDemo.isEditableMessage(message)
     
     if message.id.namespace == Namespaces.Message.ScheduledCloud {
         if let peer = message.peers[message.id.peerId], let channel = peer as? TelegramChannel {
@@ -72,7 +73,7 @@ private func canEditMessage(accountPeerId: EnginePeer.Id, limitsConfiguration: E
         }
     } else if message.id.namespace == Namespaces.Message.QuickReplyCloud {
         hasEditRights = true
-    } else if message.id.peerId.namespace == Namespaces.Peer.SecretChat || message.id.namespace != Namespaces.Message.Cloud {
+    } else if message.id.peerId.namespace == Namespaces.Peer.SecretChat || (message.id.namespace != Namespaces.Message.Cloud && !isQuickAttachDemoLocalMessage) {
         hasEditRights = false
     } else if let author = message.author, author.id == accountPeerId, let peer = message.peers[message.id.peerId] {
         hasEditRights = true
