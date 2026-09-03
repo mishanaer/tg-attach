@@ -66,6 +66,10 @@ func textInputAccessoryPanel(
                 }
             )))
         }
+
+        if QuickAttachDemo.isEnabled, case .media? = chatPresentationInterfaceState.editMessageState?.content {
+            return nil
+        }
         
         return AnyComponentWithIdentity(id: "edit", component: AnyComponent(ChatInputMessageAccessoryPanel(
             context: context,

@@ -9060,6 +9060,23 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         getAnimatedTransitionSource: ((String) -> UIView?)? = nil,
         completion: @escaping () -> Void = {}
     ) {
+        if self.chatDisplayNode.isQuickAttachEditing {
+            guard let signals else {
+                completion()
+                return
+            }
+            self.enqueueMediaMessageDisposable.set((legacyAssetPickerEnqueueMessages(
+                context: self.context,
+                account: self.context.account,
+                signals: signals,
+                originalMediaReference: originalMediaReference
+            )
+            |> deliverOnMainQueue).startStrict(next: { [weak self] items in
+                self?.chatDisplayNode.appendQuickAttachEditingMessages(items.map(\.message))
+                completion()
+            }))
+            return
+        }
         if let _ = self.presentationInterfaceState.sendPaidMessageStars {
             self.presentPaidMessageAlertIfNeeded(count: Int32(signals?.count ?? 1), forceDark: fromGallery, completion: { [weak self] postpone in
                 self?.commitEnqueueMediaMessages(signals: signals, silentPosting: silentPosting, scheduleTime: scheduleTime, postpone: postpone, parameters: parameters, getAnimatedTransitionSource: getAnimatedTransitionSource, completion: completion)

@@ -279,6 +279,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     private let attachmentButtonIcon: UIImageView
     private let quickAttachCancelIcon: UIImageView
     private var isQuickAttachActive = false
+    private var isQuickAttachEditingMedia = false
     private var commentsButtonIcon: RasterizedCompositionMonochromeLayer?
     private var commentsButtonCenterIcon: UIImageView?
     private var commentsButtonContentsLayer: RasterizedCompositionImageLayer?
@@ -2100,7 +2101,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                 } else if interfaceState.interfaceState.mediaDraftState != nil {
                     self.attachmentButtonIcon.image = UIImage(bundleImageName: "Chat/Context Menu/Delete")?.withRenderingMode(.alwaysTemplate)
                     self.attachmentButtonIcon.tintColor = interfaceState.theme.chat.inputPanel.panelControlColor
-                } else if isEditingMedia {
+                } else if isEditingMedia && !self.isQuickAttachEditingMedia {
                     self.attachmentButtonIcon.image = PresentationResourcesChat.chatInputPanelEditAttachmentButtonImage(interfaceState.theme)
                     self.attachmentButtonIcon.tintColor = interfaceState.theme.chat.inputPanel.panelControlColor
                 } else {
@@ -2140,7 +2141,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                     } else if interfaceState.interfaceState.mediaDraftState != nil {
                         self.attachmentButtonIcon.image = UIImage(bundleImageName: "Chat/Context Menu/Delete")?.withRenderingMode(.alwaysTemplate)
                         self.attachmentButtonIcon.tintColor = interfaceState.theme.chat.inputPanel.panelControlColor
-                    } else if isEditingMedia {
+                    } else if isEditingMedia && !self.isQuickAttachEditingMedia {
                         self.attachmentButtonIcon.image = PresentationResourcesChat.chatInputPanelEditAttachmentButtonImage(interfaceState.theme)
                         self.attachmentButtonIcon.tintColor = interfaceState.theme.chat.inputPanel.panelControlColor
                     } else {
@@ -5721,12 +5722,59 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         }
     }
 
+    public func setQuickAttachEditingMedia(_ active: Bool) {
+        guard self.isQuickAttachEditingMedia != active else {
+            return
+        }
+        self.isQuickAttachEditingMedia = active
+        if let theme = self.theme {
+            self.attachmentButtonIcon.image = active
+                ? PresentationResourcesChat.chatInputPanelAttachmentButtonImage(theme)
+                : PresentationResourcesChat.chatInputPanelEditAttachmentButtonImage(theme)
+        }
+    }
+
     public func revealQuickAttachPreview(identifier: String) {
         guard let preview = self.quickAttachPreviews.first(where: { $0.identifier == identifier }) else {
             return
         }
         preview.container.alpha = 1.0
         preview.removeButton.alpha = 1.0
+    }
+
+    public func setQuickAttachPreviews(_ items: [(identifier: String, image: UIImage)], removable: Bool, animated: Bool) {
+        for preview in self.quickAttachPreviews {
+            preview.container.removeFromSuperview()
+        }
+        self.quickAttachPreviews.removeAll()
+        self.quickAttachPreviewScrollView?.removeFromSuperview()
+        self.quickAttachPreviewScrollView = nil
+
+        if !items.isEmpty {
+            let scrollView = UIScrollView()
+            scrollView.alwaysBounceHorizontal = true
+            scrollView.showsHorizontalScrollIndicator = false
+            scrollView.contentInsetAdjustmentBehavior = .never
+            scrollView.disablesInteractiveTransitionGestureRecognizerNow = { [weak scrollView] in
+                guard let scrollView else {
+                    return false
+                }
+                return scrollView.contentOffset.x > .ulpOfOne
+            }
+            self.quickAttachPreviewScrollView = scrollView
+            self.textInputContainerBackgroundView.contentView.addSubview(scrollView)
+
+            for item in items {
+                let preview = self.makeQuickAttachPreview(identifier: item.identifier, image: item.image)
+                preview.container.alpha = 1.0
+                preview.removeButton.alpha = removable ? 1.0 : 0.0
+                preview.removeButton.isUserInteractionEnabled = removable
+                self.quickAttachPreviews.append(preview)
+                scrollView.addSubview(preview.container)
+            }
+        }
+
+        self.updateHeight(animated)
     }
 
     public func quickAttachPreviewTransitionView(identifier: String) -> UIView? {

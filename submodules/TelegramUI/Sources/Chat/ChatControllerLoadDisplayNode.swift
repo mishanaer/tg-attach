@@ -1230,6 +1230,10 @@ extension ChatControllerImpl {
                 }
                 return
             }
+            if strongSelf.chatDisplayNode.isQuickAttachEditing {
+                strongSelf.presentAttachmentMenu(subject: .default)
+                return
+            }
             if let messageId = strongSelf.presentationInterfaceState.interfaceState.editMessage?.messageId {
                 let _ = (strongSelf.context.engine.data.get(TelegramEngine.EngineData.Item.Messages.Message(id: messageId))
                 |> deliverOnMainQueue).startStandalone(next: { message in
@@ -1749,6 +1753,7 @@ extension ChatControllerImpl {
         }, setupEditMessage: { [weak self] messageId, completion in
             if let strongSelf = self, strongSelf.isNodeLoaded {
                 guard let messageId = messageId else {
+                    strongSelf.chatDisplayNode.endQuickAttachEditing(animated: true)
                     strongSelf.updateChatPresentationInterfaceState(animated: true, interactive: true, { state in
                         var state = state
                         state = state.updatedInterfaceState {
@@ -1762,6 +1767,7 @@ extension ChatControllerImpl {
                 }
                 let _ = strongSelf.presentVoiceMessageDiscardAlert(action: {
                     if let message = strongSelf.chatDisplayNode.historyNode.messageInCurrentHistoryView(messageId)?._asMessage() {
+                        let editMessages = strongSelf.chatDisplayNode.historyNode.messageGroupInCurrentHistoryView(messageId) ?? [message]
                         strongSelf.updateChatPresentationInterfaceState(animated: true, interactive: true, { state in
                             var entities: [MessageTextEntity] = []
                             for attribute in message.attributes {
@@ -1808,7 +1814,10 @@ extension ChatControllerImpl {
                             updated = updated.updatedShowCommands(false)
                             
                             return updated
-                        }, completion: completion)
+                        }, completion: { transition in
+                            strongSelf.chatDisplayNode.beginQuickAttachEditing(messageId: messageId, messages: editMessages)
+                            completion(transition)
+                        })
                         
                         if !strongSelf.chatDisplayNode.ensureInputViewFocused() {
                             DispatchQueue.main.async { [weak self] in
@@ -2304,7 +2313,16 @@ extension ChatControllerImpl {
                             let currentRichText = currentMessage.attributes.first(where: { $0 is RichTextMessageAttribute }) as? RichTextMessageAttribute
 
                             do {
-                                if currentMessage.text != text.string || currentEntities != entities || currentRichText != nil || richText != nil || updatingMedia || webpagePreviewAttribute != currentWebpagePreviewAttribute || disableUrlPreview {
+                                if QuickAttachDemo.isEditableMessage(currentMessage), strongSelf.chatDisplayNode.isQuickAttachEditing {
+                                    guard let update = strongSelf.chatDisplayNode.applyQuickAttachEditing(
+                                        text: richText != nil ? "" : text.string,
+                                        entities: richText != nil ? nil : entitiesAttribute,
+                                        richText: richText
+                                    ) else {
+                                        return
+                                    }
+                                    let _ = update.startStandalone()
+                                } else if currentMessage.text != text.string || currentEntities != entities || currentRichText != nil || richText != nil || updatingMedia || webpagePreviewAttribute != currentWebpagePreviewAttribute || disableUrlPreview {
                                     if QuickAttachDemo.isEditableMessage(currentMessage) {
                                         let _ = QuickAttachDemo.editLocalMessage(
                                             postbox: strongSelf.context.account.postbox,
@@ -2320,6 +2338,7 @@ extension ChatControllerImpl {
                             }
                         }
                         
+                        strongSelf.chatDisplayNode.endQuickAttachEditing(animated: true)
                         strongSelf.updateChatPresentationInterfaceState(animated: true, interactive: true, { state in
                             var state = state
                             state = state.updatedInterfaceState({ $0.withUpdatedEditMessage(nil) })

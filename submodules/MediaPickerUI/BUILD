@@ -50,6 +50,7 @@ swift_library(
         "//submodules/Components/ComponentDisplayAdapters",
         "//submodules/AnimatedCountLabelNode",
         "//submodules/TelegramUI/Components/MediaAssetsContext",
+        "//submodules/TelegramUI/Components/EntityKeyboard",
         "//submodules/TelegramUI/Components/AvatarBackground",
         "//submodules/TelegramUI/Components/EmojiTextAttachmentView",
         "//submodules/TelegramUI/Components/GlassBackgroundComponent",

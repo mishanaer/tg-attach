@@ -4,7 +4,7 @@ import Display
 import ComponentFlow
 import TelegramPresentationData
 
-final class WarpView: UIView {
+public final class WarpView: UIView {
     private final class WarpPartView: UIView {
         let cloneView: PortalView
         
@@ -32,7 +32,10 @@ final class WarpView: UIView {
         }
     }
     
-    let contentView: PortalSourceView
+    public let contentView: PortalSourceView
+    public var isAvailable: Bool {
+        return !self.warpViews.isEmpty
+    }
     
     private let clippingView: UIView
     
@@ -40,7 +43,11 @@ final class WarpView: UIView {
     private let warpMaskContainer: UIView
     private let warpMaskGradientLayer: SimpleGradientLayer
     
-    override init(frame: CGRect) {
+    public override convenience init(frame: CGRect) {
+        self.init(frame: frame, warpViewCount: 8)
+    }
+
+    public init(frame: CGRect, warpViewCount: Int) {
         self.contentView = PortalSourceView()
         self.clippingView = UIView()
         
@@ -56,7 +63,7 @@ final class WarpView: UIView {
         self.addSubview(self.clippingView)
         self.addSubview(self.warpMaskContainer)
         
-        for _ in 0 ..< 8 {
+        for _ in 0 ..< warpViewCount {
             if let warpView = WarpPartView(contentView: self.contentView) {
                 self.warpViews.append(warpView)
                 self.warpMaskContainer.addSubview(warpView)
@@ -64,11 +71,11 @@ final class WarpView: UIView {
         }
     }
     
-    required init?(coder: NSCoder) {
+    required public init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
     
-    func update(size: CGSize, topInset: CGFloat, warpHeight: CGFloat, theme: PresentationTheme, transition: ComponentTransition) {
+    public func update(size: CGSize, topInset: CGFloat, warpHeight: CGFloat, fadeBottomEdge: Bool = true, theme: PresentationTheme, transition: ComponentTransition) {
         transition.setFrame(view: self.contentView, frame: CGRect(origin: CGPoint(), size: size))
         
         let allItemsHeight = warpHeight * 0.5
@@ -91,7 +98,7 @@ final class WarpView: UIView {
             
             var transform: CATransform3D
             transform = CATransform3DIdentity
-            transform.m34 = 1.0 / 240.0
+            transform.m34 = 1.0 / (240.0 * warpHeight / 50.0)
             
             transform = CATransform3DTranslate(transform, 0.0, prevPt.x * allItemsHeight, (1.0 - prevPt.y) * allItemsHeight)
             transform = CATransform3DRotate(transform, angle, 1.0, 0.0, 0.0)
@@ -118,7 +125,7 @@ final class WarpView: UIView {
         for i in 0 ..< numStops {
             let step = CGFloat(i) / CGFloat(numStops - 1)
             locations.append(step as NSNumber)
-            colors.append(UIColor.black.withAlphaComponent(1.0 - step * step).cgColor)
+            colors.append(UIColor.black.withAlphaComponent(fadeBottomEdge ? 1.0 - step * step : 1.0).cgColor)
         }
         
         let gradientHeight: CGFloat = 6.0
@@ -132,7 +139,7 @@ final class WarpView: UIView {
         transition.setFrame(layer: self.warpMaskGradientLayer, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: size.width, height: allItemsHeight)))
     }
     
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+    public override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         return self.contentView.hitTest(point, with: event)
     }
 }

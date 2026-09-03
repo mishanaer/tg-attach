@@ -151,6 +151,116 @@ extension QuickAttachDemo {
         }
     }
 
+    static func editLocalMediaMessages(
+        postbox: Postbox,
+        messageIds: [MessageId],
+        media: [Media],
+        text: String,
+        entities: TextEntitiesMessageAttribute?,
+        richText: RichTextMessageAttribute?
+    ) -> Signal<Void, NoError> {
+        guard !messageIds.isEmpty, !media.isEmpty else {
+            return .complete()
+        }
+        return postbox.transaction { transaction -> Void in
+            let currentMessages = messageIds.compactMap(transaction.getMessage)
+            guard let template = currentMessages.first else {
+                return
+            }
+
+            let editedDate = Int32(Date().timeIntervalSince1970)
+            let groupingKey: Int64? = media.count > 1
+                ? (currentMessages.compactMap(\.groupingKey).first ?? Int64.random(in: 1 ... Int64.max))
+                : nil
+
+            func updatedAttributes(_ attributes: [MessageAttribute], includeCaption: Bool) -> [MessageAttribute] {
+                var result = attributes.filter {
+                    !($0 is TextEntitiesMessageAttribute) && !($0 is RichTextMessageAttribute) && !($0 is EditedMessageAttribute)
+                }
+                if includeCaption, let entities {
+                    result.append(entities)
+                }
+                if includeCaption, let richText {
+                    result.append(richText)
+                }
+                result.append(EditedMessageAttribute(date: editedDate, isHidden: false))
+                return result
+            }
+
+            func updatedTags(_ tags: MessageTags, media: Media) -> MessageTags {
+                var result = tags
+                result.subtract([.photoOrVideo, .file, .music, .voiceOrInstantVideo, .gif, .photo, .video, .voice, .roundVideo])
+                if media is TelegramMediaImage {
+                    result.insert([.photoOrVideo, .photo])
+                } else if let file = media as? TelegramMediaFile {
+                    if file.isVideo {
+                        result.insert([.photoOrVideo, .video])
+                        if file.isAnimated {
+                            result.insert(.gif)
+                        }
+                    } else {
+                        result.insert(.file)
+                    }
+                }
+                return result
+            }
+
+            for index in media.indices where index < currentMessages.count {
+                let currentMessage = currentMessages[index]
+                transaction.updateMessage(currentMessage.id, update: { _ in
+                    return .update(StoreMessage(
+                        id: currentMessage.id,
+                        customStableId: nil,
+                        globallyUniqueId: currentMessage.globallyUniqueId,
+                        groupingKey: groupingKey,
+                        threadId: currentMessage.threadId,
+                        timestamp: currentMessage.timestamp,
+                        flags: StoreMessageFlags(currentMessage.flags),
+                        tags: updatedTags(currentMessage.tags, media: media[index]),
+                        globalTags: currentMessage.globalTags,
+                        localTags: currentMessage.localTags,
+                        forwardInfo: currentMessage.forwardInfo.flatMap(StoreMessageForwardInfo.init),
+                        authorId: currentMessage.author?.id,
+                        text: index == 0 ? text : "",
+                        attributes: updatedAttributes(currentMessage.attributes, includeCaption: index == 0),
+                        media: [media[index]]
+                    ))
+                })
+            }
+
+            if media.count > currentMessages.count {
+                var flags = StoreMessageFlags(template.flags)
+                flags.remove(.Incoming)
+                flags.remove(.Unsent)
+                flags.remove(.Failed)
+                flags.remove(.Sending)
+                let additions = media[currentMessages.count...].map { item in
+                    return StoreMessage(
+                        peerId: template.id.peerId,
+                        namespace: Namespaces.Message.Local,
+                        customStableId: nil,
+                        globallyUniqueId: nil,
+                        groupingKey: groupingKey,
+                        threadId: template.threadId,
+                        timestamp: template.timestamp,
+                        flags: flags,
+                        tags: updatedTags(template.tags, media: item),
+                        globalTags: template.globalTags,
+                        localTags: template.localTags,
+                        forwardInfo: nil,
+                        authorId: template.author?.id,
+                        text: "",
+                        attributes: updatedAttributes([], includeCaption: false),
+                        media: [item]
+                    )
+                }
+                let _ = transaction.addMessages(additions, location: .Random)
+            } else if media.count < currentMessages.count {
+                transaction.deleteMessages(Array(currentMessages[media.count...].map(\.id)), forEachMedia: nil)
+            }
+        }
+    }
+
     static func locallyAcknowledgedMessages(postbox: Postbox, messages: [Message]) -> Signal<[Message], NoError> {
         let outgoingPendingFlags: MessageFlags = [.Unsent, .Failed, .Sending]
         let displayedMessages = messages.map { message -> Message in

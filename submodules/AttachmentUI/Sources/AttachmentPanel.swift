@@ -2242,7 +2242,7 @@ final class AttachmentPanel: ASDisplayNode, ASScrollViewDelegate, ASGestureRecog
     private func loadTextNodeIfNeeded() {
         if let _ = self.textInputPanelNode {
         } else {
-            let textInputPanelNode = AttachmentTextInputPanelNode(context: self.context, presentationInterfaceState: self.presentationInterfaceState, glass: self.panelStyle == .glass, isAttachment: true, isScheduledMessages: self.isScheduledMessages, customEmojiAvailable: self.customEmojiAvailable, presentController: { [weak self] c in
+            let textInputPanelNode = AttachmentTextInputPanelNode(context: self.context, presentationInterfaceState: self.presentationInterfaceState, glass: self.panelStyle == .glass, isAttachment: true, useApplyButton: self.controller?.useApplyButton ?? false, isScheduledMessages: self.isScheduledMessages, customEmojiAvailable: self.customEmojiAvailable, presentController: { [weak self] c in
                 if let strongSelf = self {
                     strongSelf.present(c)
                 }

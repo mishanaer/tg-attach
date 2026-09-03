@@ -254,6 +254,7 @@ public class AttachmentTextInputPanelNode: ASDisplayNode, TGCaptionPanelView, AS
     private let glass: Bool
     private let isCaption: Bool
     private let isAttachment: Bool
+    private let useApplyButton: Bool
     private let customEmojiAvailable: Bool
 
     private let presentController: (ViewController) -> Void
@@ -418,12 +419,13 @@ public class AttachmentTextInputPanelNode: ASDisplayNode, TGCaptionPanelView, AS
 
     private var maxCaptionLength: Int32?
 
-    public init(context: AccountContext, presentationInterfaceState: ChatPresentationInterfaceState, glass: Bool = false, isCaption: Bool = false, isAttachment: Bool = false, isScheduledMessages: Bool = false, customEmojiAvailable: Bool, presentController: @escaping (ViewController) -> Void, presentInGlobalOverlay: @escaping (ViewController) -> Void, getNavigationController: @escaping () -> NavigationController?) {
+    public init(context: AccountContext, presentationInterfaceState: ChatPresentationInterfaceState, glass: Bool = false, isCaption: Bool = false, isAttachment: Bool = false, useApplyButton: Bool = false, isScheduledMessages: Bool = false, customEmojiAvailable: Bool, presentController: @escaping (ViewController) -> Void, presentInGlobalOverlay: @escaping (ViewController) -> Void, getNavigationController: @escaping () -> NavigationController?) {
         self.context = context
         self.presentationInterfaceState = presentationInterfaceState
         self.glass = glass
         self.isCaption = isCaption
         self.isAttachment = isAttachment
+        self.useApplyButton = useApplyButton
         self.customEmojiAvailable = customEmojiAvailable
         self.presentController = presentController
         self.presentInGlobalOverlay = presentInGlobalOverlay
@@ -985,7 +987,7 @@ public class AttachmentTextInputPanelNode: ASDisplayNode, TGCaptionPanelView, AS
                 }
             }
 
-            let sendButtonHasApplyIcon = self.isCaption || interfaceState.interfaceState.editMessage != nil
+            let sendButtonHasApplyIcon = self.useApplyButton || self.isCaption || interfaceState.interfaceState.editMessage != nil
             if updateSendButtonIcon, !self.actionButtons.animatingSendButton {
                 let imageNode = self.actionButtons.sendButton.imageNode
 
@@ -1927,7 +1929,7 @@ public class AttachmentTextInputPanelNode: ASDisplayNode, TGCaptionPanelView, AS
 
     private func applyUpdateSendButtonIcon() {
         if let interfaceState = self.presentationInterfaceState {
-            let sendButtonHasApplyIcon = interfaceState.interfaceState.editMessage != nil
+            let sendButtonHasApplyIcon = self.useApplyButton || interfaceState.interfaceState.editMessage != nil
 
             if sendButtonHasApplyIcon != self.actionButtons.sendButtonHasApplyIcon {
                 self.actionButtons.sendButtonHasApplyIcon = sendButtonHasApplyIcon

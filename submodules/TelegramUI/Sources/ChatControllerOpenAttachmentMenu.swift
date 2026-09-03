@@ -248,6 +248,7 @@ extension ChatControllerImpl {
             
             let context = self.context
             let inputIsActive = self.presentationInterfaceState.inputMode == .text
+            let isQuickAttachEditing = self.chatDisplayNode.isQuickAttachEditing
             
             self.chatDisplayNode.dismissInput()
             
@@ -313,22 +314,25 @@ extension ChatControllerImpl {
                 canSendPolls = false
             }
             
-            var availableButtons: [AttachmentButtonType] = [.gallery, .file]
-            if banSendText == nil {
-                availableButtons.append(.location)
-                availableButtons.append(.contact)
-            }
-            
-            if canSendPolls {
-                availableButtons.insert(.poll, at: max(0, availableButtons.count - 1))
-            }
-            
-            if canSendTodos {
-                availableButtons.insert(.todo, at: max(0, availableButtons.count - 1))
-            }
-            
-            if "".isEmpty {
-                availableButtons.insert(.audio, at: max(0, availableButtons.count - 1))
+            var availableButtons: [AttachmentButtonType] = [.gallery]
+            if !isQuickAttachEditing {
+                availableButtons.append(.file)
+                if banSendText == nil {
+                    availableButtons.append(.location)
+                    availableButtons.append(.contact)
+                }
+
+                if canSendPolls {
+                    availableButtons.insert(.poll, at: max(0, availableButtons.count - 1))
+                }
+
+                if canSendTodos {
+                    availableButtons.insert(.todo, at: max(0, availableButtons.count - 1))
+                }
+
+                if "".isEmpty {
+                    availableButtons.insert(.audio, at: max(0, availableButtons.count - 1))
+                }
             }
             
             let presentationData = self.presentationData
@@ -363,7 +367,9 @@ extension ChatControllerImpl {
             }
             
             let buttons: Signal<([AttachmentButtonType], [AttachmentButtonType], AttachmentButtonType?), NoError>
-            if let peer = self.presentationInterfaceState.renderedPeer?.peer, !isScheduledMessages, !peer.isDeleted {
+            if isQuickAttachEditing {
+                buttons = .single((availableButtons, availableButtons, .gallery))
+            } else if let peer = self.presentationInterfaceState.renderedPeer?.peer, !isScheduledMessages, !peer.isDeleted {
                 buttons = combineLatest(
                     self.context.engine.messages.attachMenuBots(),
                     self.context.engine.accountData.shortcutMessageList(onlyRemote: true) |> take(1)
@@ -454,10 +460,12 @@ extension ChatControllerImpl {
                 }
                 
                 var (buttons, allButtons, initialButton) = buttonsAndInitialButton
-                if !premiumGiftOptions.isEmpty {
-                    buttons.insert(.gift, at: 1)
+                if !isQuickAttachEditing {
+                    if !premiumGiftOptions.isEmpty {
+                        buttons.insert(.gift, at: 1)
+                    }
+                    buttons.insert(.richText, at: 1)   // rich text is default-on (legacy is the opt-out)
                 }
-                buttons.insert(.richText, at: 1)   // rich text is default-on (legacy is the opt-out)
                 
                 guard let initialButton = initialButton else {
                     if case let .bot(botId, botPayload, botJustInstalled) = subject {
@@ -516,7 +524,7 @@ extension ChatControllerImpl {
                 
                 strongSelf.canReadHistory.set(false)
                 
-                let attachmentController = AttachmentController(context: strongSelf.context, updatedPresentationData: strongSelf.updatedPresentationData, style: .glass, chatLocation: strongSelf.chatLocation, isScheduledMessages: isScheduledMessages, buttons: buttons, initialButton: initialButton, customEmojiAvailable: strongSelf.presentationInterfaceState.customEmojiAvailable)
+                let attachmentController = AttachmentController(context: strongSelf.context, updatedPresentationData: strongSelf.updatedPresentationData, style: .glass, chatLocation: strongSelf.chatLocation, isScheduledMessages: isScheduledMessages, buttons: buttons, initialButton: initialButton, useApplyButton: isQuickAttachEditing, customEmojiAvailable: strongSelf.presentationInterfaceState.customEmojiAvailable)
                 attachmentController.attachmentButton = strongSelf.chatDisplayNode.getAttachmentButton()
                 attachmentController.shouldMinimizeOnSwipe = { [weak attachmentController] button in
                     if case .app = button {
@@ -563,7 +571,7 @@ extension ChatControllerImpl {
                         }, updateMediaPickerContext: { [weak attachmentController] mediaPickerContext in
                             attachmentController?.mediaPickerContext = mediaPickerContext
                         }, completion: { [weak self] fromGallery, signals, silentPosting, scheduleTime, parameters, getAnimatedTransitionSource, completion in
-                            if !inputText.string.isEmpty {
+                            if !inputText.string.isEmpty, self?.chatDisplayNode.isQuickAttachEditing != true {
                                 self?.clearInputText()
                             }
                             self?.enqueueMediaMessages(fromGallery: fromGallery, signals: signals, silentPosting: silentPosting, scheduleTime: scheduleTime, parameters: parameters, getAnimatedTransitionSource: getAnimatedTransitionSource, completion: completion)
@@ -1695,7 +1703,9 @@ extension ChatControllerImpl {
             paidMediaAllowed: paidMediaAllowed,
             subject: subject,
             sendPaidMessageStars: self.presentationInterfaceState.sendPaidMessageStars?.value,
-            saveEditedPhotos: saveEditedPhotos
+            saveEditedPhotos: saveEditedPhotos,
+            displayBottomEdgeEffect: !self.chatDisplayNode.isQuickAttachEditing,
+            warpContentsOnBottomEdge: self.chatDisplayNode.isQuickAttachEditing
         )
         controller.openBoost = { [weak self, weak controller] in
             if let self {
@@ -2163,7 +2173,7 @@ extension ChatControllerImpl {
             presentedLegacyCamera(context: strongSelf.context, peer: cameraPeer, chatLocation: strongSelf.chatLocation, cameraView: cameraView, menuController: nil, parentController: strongSelf, attachmentController: self?.attachmentController, editingMedia: false, saveCapturedPhotos: storeCapturedMedia, mediaGrouping: true, initialCaption: inputText, hasSchedule: hasSchedule, enablePhoto: enablePhoto, enableVideo: enableVideo, sendPaidMessageStars: strongSelf.presentationInterfaceState.sendPaidMessageStars?.value ?? 0, sendMessagesWithSignals: { [weak self] signals, silentPosting, scheduleTime, parameters in
                 if let strongSelf = self {
                     strongSelf.enqueueMediaMessages(signals: signals, silentPosting: silentPosting, scheduleTime: scheduleTime > 0 ? scheduleTime : nil, parameters: parameters)
-                    if !inputText.string.isEmpty {
+                    if !inputText.string.isEmpty, !strongSelf.chatDisplayNode.isQuickAttachEditing {
                         strongSelf.clearInputText()
                     }
                 }

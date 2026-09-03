@@ -430,6 +430,7 @@ public class AttachmentController: ViewController, MinimizableController {
     private let initialButton: AttachmentButtonType
     private let fromMenu: Bool
     private var hasTextInput: Bool
+    let useApplyButton: Bool
     private let isFullSize: Bool
     private let customEmojiAvailable: Bool
     public var animateAppearance: Bool = false
@@ -1561,6 +1562,7 @@ public class AttachmentController: ViewController, MinimizableController {
         initialButton: AttachmentButtonType = .gallery,
         fromMenu: Bool = false,
         hasTextInput: Bool = true,
+        useApplyButton: Bool = false,
         isFullSize: Bool = false,
         makeEntityInputView: @escaping () -> UIView? = { return nil },
         customEmojiAvailable: Bool = true)
@@ -1574,6 +1576,7 @@ public class AttachmentController: ViewController, MinimizableController {
         self.initialButton = initialButton
         self.fromMenu = fromMenu
         self.hasTextInput = hasTextInput
+        self.useApplyButton = useApplyButton
         self.isFullSize = isFullSize
         self.customEmojiAvailable = customEmojiAvailable
 

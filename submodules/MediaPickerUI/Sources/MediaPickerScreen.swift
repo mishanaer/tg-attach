@@ -25,6 +25,7 @@ import ImageObjectSeparation
 import ChatSendMessageActionUI
 import AnimatedCountLabelNode
 import MediaAssetsContext
+import EntityKeyboard
 import GlassBackgroundComponent
 import EdgeEffect
 import ComponentFlow
@@ -232,6 +233,8 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
     fileprivate let subject: Subject
     fileprivate let forCollage: Bool
     private let saveEditedPhotos: Bool
+    private let displayBottomEdgeEffect: Bool
+    private let warpContentsOnBottomEdge: Bool
     
     private var explicitMultipleSelection = false
     
@@ -316,8 +319,10 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         private var requestedCameraAccess = false
         
         private let containerNode: ASDisplayNode
+        private let gridContainerNode: ASDisplayNode
         private let backgroundView: GlassBackgroundView?
         private let backgroundNode: NavigationBackgroundNode
+        private let bottomWarpView: WarpView?
         fileprivate let gridNode: GridNode
         fileprivate let topEdgeEffectView: EdgeEffectView
         fileprivate let bottomEdgeEffectView: EdgeEffectView
@@ -387,8 +392,16 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             self.mediaAssetsContext = mediaAssetsContext
             
             self.containerNode = ASDisplayNode()
+            self.gridContainerNode = ASDisplayNode()
             self.backgroundNode = NavigationBackgroundNode(color: self.presentationData.theme.rootController.tabBar.backgroundColor)
             self.backgroundNode.backgroundColor = self.presentationData.theme.list.plainBackgroundColor
+
+            if controller.warpContentsOnBottomEdge {
+                let bottomWarpView = WarpView(frame: .zero, warpViewCount: 16)
+                self.bottomWarpView = bottomWarpView.isAvailable ? bottomWarpView : nil
+            } else {
+                self.bottomWarpView = nil
+            }
             
             if case .glass = controller.style, !"".isEmpty {
                 self.backgroundView = GlassBackgroundView()
@@ -397,6 +410,9 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             }
         
             self.gridNode = GridNode()
+            if controller.warpContentsOnBottomEdge {
+                self.gridNode.scrollView.clipsToBounds = false
+            }
             self.scrollingArea = SparseItemGridScrollingArea()
             
             self.cameraWrapperView = UIView()
@@ -427,13 +443,19 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             } else {
                 self.containerNode.addSubnode(self.backgroundNode)
             }
-            self.containerNode.addSubnode(self.gridNode)
+            self.gridContainerNode.addSubnode(self.gridNode)
+            if let bottomWarpView = self.bottomWarpView {
+                self.containerNode.view.addSubview(bottomWarpView)
+                bottomWarpView.contentView.addSubview(self.gridContainerNode.view)
+            } else {
+                self.containerNode.addSubnode(self.gridContainerNode)
+            }
             self.containerNode.addSubnode(self.scrollingArea)
             
             if case .glass = controller.style {
                 self.containerNode.view.addSubview(self.topEdgeEffectView)
                 
-                if case let .assets(_, mode) = controller.subject {
+                if controller.displayBottomEdgeEffect, case let .assets(_, mode) = controller.subject {
                     switch mode {
                     case .default, .poll:
                         self.containerNode.view.addSubview(self.bottomEdgeEffectView)
@@ -1757,7 +1779,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                         placeholderNode.boostPressed = { [weak controller] in
                             controller?.openBoost()
                         }
-                        self.containerNode.insertSubnode(placeholderNode, aboveSubnode: self.gridNode)
+                        self.gridContainerNode.insertSubnode(placeholderNode, aboveSubnode: self.gridNode)
                         self.placeholderNode = placeholderNode
                         
                         placeholderTransition = .immediate
@@ -1813,6 +1835,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                         
             let cleanGridInsets = UIEdgeInsets(top: insets.top, left: layout.safeInsets.left, bottom: layout.intrinsicInsets.bottom, right: layout.safeInsets.right)
             let gridInsets = UIEdgeInsets(top: insets.top + manageHeight, left: layout.safeInsets.left, bottom: layout.intrinsicInsets.bottom, right: layout.safeInsets.right)
+            transition.updateFrame(node: self.gridContainerNode, frame: innerBounds)
             transition.updateFrame(node: self.gridNode, frame: innerBounds)
             self.scrollingArea.frame = innerBounds
             
@@ -1825,6 +1848,11 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             }
             
             transition.updateFrame(node: self.containerNode, frame: CGRect(origin: CGPoint(), size: CGSize(width: bounds.width, height: bounds.height)))
+            if let bottomWarpView = self.bottomWarpView {
+                let warpBounds = CGRect(origin: innerBounds.origin, size: CGSize(width: innerBounds.width, height: max(0.0, innerBounds.height - layout.additionalInsets.bottom)))
+                transition.updateFrame(view: bottomWarpView, frame: warpBounds)
+                bottomWarpView.update(size: warpBounds.size, topInset: insets.top, warpHeight: 100.0, fadeBottomEdge: false, theme: self.presentationData.theme, transition: ComponentTransition(transition))
+            }
             
             if let cameraRect {
                 cutoutRects.append(cameraRect)
@@ -1866,7 +1894,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             if let selectionNode = self.selectionNode, let controller = self.controller {
                 let selectionTransition = selectionNode.supernode == nil ? .immediate : transition
                 if selectionNode.supernode == nil {
-                    self.containerNode.insertSubnode(selectionNode, aboveSubnode: self.gridNode)
+                    self.gridContainerNode.insertSubnode(selectionNode, aboveSubnode: self.gridNode)
                 }
                 
                 let selectedItems = controller.interaction?.selectionState?.selectedItems() as? [TGMediaSelectableItem] ?? []
@@ -1956,7 +1984,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
                         self?.dismissInput()
                         self?.controller?.openCamera?(nil)
                     }
-                    self.containerNode.insertSubnode(placeholderNode, aboveSubnode: self.gridNode)
+                    self.gridContainerNode.insertSubnode(placeholderNode, aboveSubnode: self.gridNode)
                     self.placeholderNode = placeholderNode
                     
                     if transition.isAnimated {
@@ -2035,7 +2063,9 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         saveEditedPhotos: Bool = false,
         mainButtonState: AttachmentMainButtonState? = nil,
         mainButtonAction: (() -> Void)? = nil,
-        secondaryButtonAction: (() -> Void)? = nil
+        secondaryButtonAction: (() -> Void)? = nil,
+        displayBottomEdgeEffect: Bool = true,
+        warpContentsOnBottomEdge: Bool = false
     ) {
         self.context = context
                 
@@ -2055,6 +2085,8 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         self.subject = subject
         self.forCollage = forCollage
         self.saveEditedPhotos = saveEditedPhotos
+        self.displayBottomEdgeEffect = displayBottomEdgeEffect
+        self.warpContentsOnBottomEdge = warpContentsOnBottomEdge
         self.mainButtonStatePromise.set(.single(mainButtonState))
         self.mainButtonAction = mainButtonAction
         self.secondaryButtonAction = secondaryButtonAction
