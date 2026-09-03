@@ -1705,7 +1705,7 @@ extension ChatControllerImpl {
             sendPaidMessageStars: self.presentationInterfaceState.sendPaidMessageStars?.value,
             saveEditedPhotos: saveEditedPhotos,
             displayBottomEdgeEffect: !self.chatDisplayNode.isQuickAttachEditing,
-            warpContentsOnBottomEdge: self.chatDisplayNode.isQuickAttachEditing
+            warpContentsOnBottomEdge: true
         )
         controller.openBoost = { [weak self, weak controller] in
             if let self {

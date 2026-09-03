@@ -1851,7 +1851,9 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             if let bottomWarpView = self.bottomWarpView {
                 let warpBounds = CGRect(origin: innerBounds.origin, size: CGSize(width: innerBounds.width, height: max(0.0, innerBounds.height - layout.additionalInsets.bottom)))
                 transition.updateFrame(view: bottomWarpView, frame: warpBounds)
-                bottomWarpView.update(size: warpBounds.size, topInset: insets.top, warpHeight: 100.0, fadeBottomEdge: false, theme: self.presentationData.theme, transition: ComponentTransition(transition))
+                // topInset clips the warp's content view: anything above it is cut, so the grid must
+                // start at 0 to keep scrolling under the header, where the top edge effect blurs it.
+                bottomWarpView.update(size: warpBounds.size, topInset: 0.0, warpHeight: 100.0, fadeBottomEdge: false, theme: self.presentationData.theme, transition: ComponentTransition(transition))
             }
             
             if let cameraRect {
@@ -2005,7 +2007,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             
             let bottomEdgeEffectFrame = CGRect(origin: CGPoint(x: 0.0, y: layout.size.height - 88.0 - layout.additionalInsets.bottom), size: CGSize(width: layout.size.width, height: 88.0))
             transition.updateFrame(view: self.bottomEdgeEffectView, frame: bottomEdgeEffectFrame)
-            self.bottomEdgeEffectView.update(content: self.currentDisplayMode == .all ? self.presentationData.theme.list.plainBackgroundColor : .clear, blur: true, alpha: 0.65, rect: bottomEdgeEffectFrame, edge: .bottom, edgeSize: bottomEdgeEffectFrame.height, transition: ComponentTransition(transition))
+            self.bottomEdgeEffectView.update(content: self.currentDisplayMode == .all ? self.presentationData.theme.list.plainBackgroundColor : .clear, blur: false, alpha: 0.65, rect: bottomEdgeEffectFrame, edge: .bottom, edgeSize: bottomEdgeEffectFrame.height, transition: ComponentTransition(transition))
         }
     }
     
