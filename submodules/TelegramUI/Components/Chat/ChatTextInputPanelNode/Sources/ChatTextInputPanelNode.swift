@@ -317,11 +317,18 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     }
     private var quickAttachPreviews: [QuickAttachPreview] = []
     private var quickAttachPreviewScrollView: UIScrollView?
+    private var quickAttachReorderingIdentifier: String?
+    private var quickAttachReorderGrabOffset: CGFloat = 0.0
+    private var quickAttachReorderLocation: CGPoint = .zero
+    private var quickAttachAutoScrollDwellTimer: SwiftSignalKit.Timer?
+    private var quickAttachAutoScrollDirection: CGFloat = 0.0
+    private var quickAttachAutoScrollIsPaging = false
 
     private enum QuickAttachPreviewLayout {
         static let side: CGFloat = 86.0
         static let inset: CGFloat = 8.0
-        static let rowHeight: CGFloat = side + inset
+        // Inset on both sides: a lifted tile scales to 1.1 and needs ~4 pt of room above and below.
+        static let rowHeight: CGFloat = side + inset * 2.0
         static let removeSide: CGFloat = 22.0
         static let removeInset: CGFloat = 4.0
     }
@@ -347,6 +354,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     public var displayAttachmentMenu: () -> Void = { }
     public var sendMessage: () -> Void = { }
     public var removeQuickAttach: (String) -> Void = { _ in }
+    public var reorderQuickAttach: ([String]) -> Void = { _ in }
     public var isQuickAttachGestureEnabled = false {
         didSet {
             self.attachmentButtonContextSource.isGestureEnabled = self.isQuickAttachGestureEnabled
@@ -3143,13 +3151,9 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                 frame: CGRect(x: 0.0, y: contentHeight, width: textInputWidth, height: QuickAttachPreviewLayout.rowHeight)
             )
             for (index, preview) in self.quickAttachPreviews.enumerated() {
-                let previewFrame = CGRect(
-                    x: QuickAttachPreviewLayout.inset + CGFloat(index) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
-                    y: QuickAttachPreviewLayout.inset,
-                    width: QuickAttachPreviewLayout.side,
-                    height: QuickAttachPreviewLayout.side
-                )
-                transition.updateFrame(view: preview.container, frame: previewFrame)
+                if preview.identifier != self.quickAttachReorderingIdentifier {
+                    transition.updateFrame(view: preview.container, frame: self.quickAttachPreviewFrame(index: index))
+                }
                 preview.imageView.frame = preview.container.bounds
                 preview.removeButton.frame = CGRect(
                     x: QuickAttachPreviewLayout.side - QuickAttachPreviewLayout.removeSide - QuickAttachPreviewLayout.removeInset,
@@ -5687,6 +5691,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             }
             self.quickAttachPreviewScrollView = quickAttachPreviewScrollView
             self.textInputContainerBackgroundView.contentView.addSubview(quickAttachPreviewScrollView)
+            self.installQuickAttachReorderGesture(on: quickAttachPreviewScrollView)
         }
         quickAttachPreviewScrollView.addSubview(preview.container)
 
@@ -5763,6 +5768,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             }
             self.quickAttachPreviewScrollView = scrollView
             self.textInputContainerBackgroundView.contentView.addSubview(scrollView)
+            self.installQuickAttachReorderGesture(on: scrollView)
 
             for item in items {
                 let preview = self.makeQuickAttachPreview(identifier: item.identifier, image: item.image)
@@ -5861,6 +5867,184 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         }
         self.hapticFeedback.impact(.light)
         self.removeQuickAttach(identifier)
+    }
+
+    private func quickAttachPreviewFrame(index: Int) -> CGRect {
+        return CGRect(
+            x: QuickAttachPreviewLayout.inset + CGFloat(index) * (QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset),
+            y: QuickAttachPreviewLayout.inset,
+            width: QuickAttachPreviewLayout.side,
+            height: QuickAttachPreviewLayout.side
+        )
+    }
+
+    private func installQuickAttachReorderGesture(on scrollView: UIScrollView) {
+        let recognizer = UILongPressGestureRecognizer(target: self, action: #selector(self.quickAttachReorderGesture(_:)))
+        scrollView.addGestureRecognizer(recognizer)
+    }
+
+    // SpringBoard-style reordering: hold a thumbnail, everything starts to jiggle, drag it past a
+    // neighbour and they trade places, release and it settles into its slot.
+    @objc private func quickAttachReorderGesture(_ recognizer: UILongPressGestureRecognizer) {
+        guard let scrollView = self.quickAttachPreviewScrollView else {
+            return
+        }
+        let location = recognizer.location(in: scrollView)
+        let spring: (@escaping () -> Void) -> Void = { changes in
+            UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.0, options: [.beginFromCurrentState, .allowUserInteraction], animations: changes)
+        }
+
+        switch recognizer.state {
+        case .began:
+            guard let preview = self.quickAttachPreviews.first(where: { $0.container.frame.contains(location) }) else {
+                recognizer.isEnabled = false
+                recognizer.isEnabled = true
+                return
+            }
+            self.quickAttachReorderingIdentifier = preview.identifier
+            self.quickAttachReorderGrabOffset = location.x - preview.container.center.x
+            self.hapticFeedback.impact(.light)
+            scrollView.bringSubviewToFront(preview.container)
+            spring {
+                preview.container.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+            }
+            self.setQuickAttachJiggle(true)
+        case .changed:
+            self.quickAttachReorderLocation = recognizer.location(in: self.view)
+            self.updateQuickAttachReorder(location: location)
+            self.updateQuickAttachAutoScroll()
+        case .ended, .cancelled, .failed:
+            guard self.quickAttachReorderingIdentifier != nil else {
+                return
+            }
+            self.quickAttachReorderingIdentifier = nil
+            self.setQuickAttachAutoScroll(direction: 0.0)
+            self.setQuickAttachJiggle(false)
+            spring {
+                for (index, preview) in self.quickAttachPreviews.enumerated() {
+                    preview.container.transform = .identity
+                    preview.container.frame = self.quickAttachPreviewFrame(index: index)
+                }
+            }
+            self.reorderQuickAttach(self.quickAttachPreviews.map(\.identifier))
+        default:
+            break
+        }
+    }
+
+    private func updateQuickAttachReorder(location: CGPoint) {
+        guard let scrollView = self.quickAttachPreviewScrollView, let identifier = self.quickAttachReorderingIdentifier, let index = self.quickAttachPreviews.firstIndex(where: { $0.identifier == identifier }) else {
+            return
+        }
+        let slot = QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset
+        let preview = self.quickAttachPreviews[index]
+        let minX = QuickAttachPreviewLayout.inset + QuickAttachPreviewLayout.side * 0.5
+        let maxX = max(minX, scrollView.contentSize.width - QuickAttachPreviewLayout.inset - QuickAttachPreviewLayout.side * 0.5)
+        preview.container.center.x = min(maxX, max(minX, location.x - self.quickAttachReorderGrabOffset))
+
+        let targetIndex = min(self.quickAttachPreviews.count - 1, max(0, Int(((preview.container.center.x - minX) / slot).rounded())))
+        if targetIndex != index {
+            self.quickAttachPreviews.remove(at: index)
+            self.quickAttachPreviews.insert(preview, at: targetIndex)
+            UIView.animate(withDuration: 0.4, delay: 0.0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.0, options: [.beginFromCurrentState, .allowUserInteraction], animations: {
+                for (otherIndex, other) in self.quickAttachPreviews.enumerated() where other.identifier != identifier {
+                    other.container.frame = self.quickAttachPreviewFrame(index: otherIndex)
+                }
+            })
+        }
+    }
+
+    // Holding the lifted tile near an edge of the row pages the row, the way SpringBoard flips to
+    // the next page when an icon is held at the screen edge: a short dwell, then one slot at a time.
+    private func updateQuickAttachAutoScroll() {
+        guard let scrollView = self.quickAttachPreviewScrollView, self.quickAttachReorderingIdentifier != nil else {
+            self.setQuickAttachAutoScroll(direction: 0.0)
+            return
+        }
+        let edgeZone: CGFloat = 40.0
+        let x = self.view.convert(self.quickAttachReorderLocation, to: scrollView.superview).x
+        let frame = scrollView.frame
+        let maxOffset = scrollView.contentSize.width - scrollView.bounds.width
+
+        var direction: CGFloat = 0.0
+        if maxOffset > 0.0 {
+            if x < frame.minX + edgeZone && scrollView.contentOffset.x > 0.0 {
+                direction = -1.0
+            } else if x > frame.maxX - edgeZone && scrollView.contentOffset.x < maxOffset {
+                direction = 1.0
+            }
+        }
+        self.setQuickAttachAutoScroll(direction: direction)
+    }
+
+    private func setQuickAttachAutoScroll(direction: CGFloat) {
+        self.quickAttachAutoScrollDirection = direction
+        if direction == 0.0 {
+            self.quickAttachAutoScrollDwellTimer?.invalidate()
+            self.quickAttachAutoScrollDwellTimer = nil
+            return
+        }
+        if self.quickAttachAutoScrollDwellTimer != nil || self.quickAttachAutoScrollIsPaging {
+            return
+        }
+        let dwellTimer = SwiftSignalKit.Timer(timeout: 0.8, repeat: false, completion: { [weak self] in
+            guard let self else {
+                return
+            }
+            self.quickAttachAutoScrollDwellTimer = nil
+            self.pageQuickAttachRow()
+        }, queue: Queue.mainQueue())
+        self.quickAttachAutoScrollDwellTimer = dwellTimer
+        dwellTimer.start()
+    }
+
+    private func pageQuickAttachRow() {
+        guard let scrollView = self.quickAttachPreviewScrollView, self.quickAttachAutoScrollDirection != 0.0 else {
+            return
+        }
+        let slot = QuickAttachPreviewLayout.side + QuickAttachPreviewLayout.inset
+        let maxOffset = max(0.0, scrollView.contentSize.width - scrollView.bounds.width)
+        let target = min(maxOffset, max(0.0, scrollView.contentOffset.x + self.quickAttachAutoScrollDirection * slot))
+        guard target != scrollView.contentOffset.x else {
+            return
+        }
+        self.quickAttachAutoScrollIsPaging = true
+        UIView.animate(withDuration: 0.3, delay: 0.0, options: [.curveEaseInOut, .allowUserInteraction], animations: {
+            scrollView.contentOffset.x = target
+            // The lifted tile rides along, staying under the finger.
+            self.updateQuickAttachReorder(location: self.view.convert(self.quickAttachReorderLocation, to: scrollView))
+        }, completion: { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.quickAttachAutoScrollIsPaging = false
+            // Still held at the edge: dwell again, then the next page.
+            self.updateQuickAttachAutoScroll()
+        })
+    }
+
+    private func setQuickAttachJiggle(_ active: Bool) {
+        for preview in self.quickAttachPreviews {
+            let layer = preview.container.layer
+            if !active {
+                layer.removeAnimation(forKey: "jiggle")
+                continue
+            }
+            if layer.animation(forKey: "jiggle") != nil {
+                continue
+            }
+            // SpringBoard values: about ±1.7°, one swing per 0.12 s, each tile out of phase.
+            let jiggle = CABasicAnimation(keyPath: "transform.rotation.z")
+            jiggle.fromValue = -0.03
+            jiggle.toValue = 0.03
+            jiggle.duration = 0.12
+            jiggle.autoreverses = true
+            jiggle.repeatCount = .infinity
+            jiggle.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            jiggle.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - Double.random(in: 0.0 ..< 0.24)
+            jiggle.isAdditive = true
+            layer.add(jiggle, forKey: "jiggle")
+        }
     }
     
     @objc func sendButtonPressed() {

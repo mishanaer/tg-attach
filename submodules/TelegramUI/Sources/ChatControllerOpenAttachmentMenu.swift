@@ -1688,6 +1688,15 @@ extension ChatControllerImpl {
         if let cachedData = self.contentData?.state.peerView?.cachedData as? CachedChannelData, cachedData.flags.contains(.paidMediaAllowed) {
             paidMediaAllowed = true
         }
+        // Editing an album: let the picker itself enforce the remaining room, the way upstream caps
+        // selection in slowmode chats (the context refuses the extra item and reports it).
+        var selectionContext: TGMediaSelectionContext?
+        if self.chatDisplayNode.isQuickAttachEditing {
+            selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: Int32(self.chatDisplayNode.quickAttachEditingRoom))
+            selectionContext?.selectionLimitExceeded = {
+                HapticFeedback().error()
+            }
+        }
         let controller = MediaPickerScreenImpl(
             context: self.context,
             updatedPresentationData: self.updatedPresentationData,
@@ -1703,6 +1712,7 @@ extension ChatControllerImpl {
             paidMediaAllowed: paidMediaAllowed,
             subject: subject,
             sendPaidMessageStars: self.presentationInterfaceState.sendPaidMessageStars?.value,
+            selectionContext: selectionContext,
             saveEditedPhotos: saveEditedPhotos,
             displayBottomEdgeEffect: !self.chatDisplayNode.isQuickAttachEditing,
             warpContentsOnBottomEdge: true

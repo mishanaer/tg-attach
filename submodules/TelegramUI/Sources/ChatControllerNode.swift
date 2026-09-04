@@ -288,6 +288,9 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
     private var quickAttachBackdrop: UIVisualEffectView?
     private var quickAttachButtonVisualRestoreState: (superview: UIView, index: Int, frame: CGRect)?
     private var quickAttachSelections: [QuickAttachMediaItem] = []
+    // Telegram albums hold at most 10 items. Sending splits into albums on its own (the legacy
+    // sender starts a new group every 10); only editing an existing album has to respect the cap.
+    private let quickAttachMaxCount = 10
     private var quickAttachEditingMessageId: MessageId?
     private var quickAttachEditingMessageIds: [MessageId] = []
     private var quickAttachEditingItems: [(identifier: String, media: Media, image: UIImage)] = []
@@ -1056,6 +1059,22 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                     return
                 }
                 self.clearQuickAttachSelection(identifier: identifier, animated: true)
+            }
+            textInputPanelNode.reorderQuickAttach = { [weak self] identifiers in
+                guard let self else {
+                    return
+                }
+                if self.isQuickAttachEditing {
+                    let items = identifiers.compactMap { identifier in self.quickAttachEditingItems.first(where: { $0.identifier == identifier }) }
+                    if items.count == self.quickAttachEditingItems.count {
+                        self.quickAttachEditingItems = items
+                    }
+                } else {
+                    let items = identifiers.compactMap { identifier in self.quickAttachSelections.first(where: { $0.asset?.localIdentifier == identifier }) }
+                    if items.count == self.quickAttachSelections.count {
+                        self.quickAttachSelections = items
+                    }
+                }
             }
         }
         self.textInputPanelNode?.updateActivity = { [weak self] in
@@ -4120,7 +4139,9 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             return
         }
         QuickAttachRecentPhotosProvider.shared.prefetch(count: self.quickAttachSelections.count + 6, requestAccess: true)
-        self.view.endEditing(false)
+        // The keyboard stays up on purpose: hiding it runs a layout pass that writes the attachment
+        // button's frame in panel coordinates while the button is reparented into the container
+        // below, so it jumps to the container's origin.
 
         let state = self.chatPresentationInterfaceState
         let containerView = self.wrappingNode.contentNode.view
@@ -4333,6 +4354,11 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         return self.quickAttachEditingMessageId != nil
     }
 
+    /// How many more items the album being edited can take.
+    var quickAttachEditingRoom: Int {
+        return max(0, self.quickAttachMaxCount - self.quickAttachEditingItems.count)
+    }
+
     private func quickAttachEditingItemSignal(
         identifier: String,
         mediaReference: AnyMediaReference,
@@ -4439,7 +4465,11 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             }
             return mediaReference
         }
-        let previewSignals = mediaReferences.compactMap { mediaReference in
+        let room = self.quickAttachMaxCount - self.quickAttachEditingItems.count
+        guard room > 0 else {
+            return
+        }
+        let previewSignals = mediaReferences.prefix(room).compactMap { mediaReference in
             return self.quickAttachEditingItemSignal(
                 identifier: "edit:new:\(UUID().uuidString)",
                 mediaReference: mediaReference,
@@ -4465,8 +4495,13 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             return false
         }
         self.quickAttachEditingItems.removeAll(where: { $0.identifier == identifier })
-        self.textInputPanelNode?.customSendIsDisabled = self.quickAttachEditingItems.isEmpty
         self.textInputPanelNode?.clearQuickAttachPreview(identifier: identifier, animated: animated)
+        if self.quickAttachEditingItems.isEmpty {
+            // The standard edit panel is hidden for media edits, so the thumbnails are the only
+            // exit: removing the last one cancels the edit instead of leaving a disabled apply
+            // button, no cancel, and a blocked attachment gesture behind.
+            self.interfaceInteraction?.setupEditMessage(nil, { _ in })
+        }
         return true
     }
 

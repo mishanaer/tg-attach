@@ -2681,7 +2681,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             }
             
             self.titleView.segmentsHidden = true
-            moreIsVisible = usesSwappedControls || count > 0
+            moreIsVisible = count > 0
         }
         
         let useGlassButtons = (isBack || !self.controllerNode.scrolledToTop) && !self.controllerNode.isSwitchingAssetGroup
@@ -2802,7 +2802,10 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             }
         }
 
-        if usesSwappedControls && !isBack {
+        // With nothing selected the right group is empty, so the left slot keeps the close button;
+        // once something is selected the "more" item moves into it and the group's own
+        // alpha+blur item transition morphs one icon into the other.
+        if usesSwappedControls && !isBack && !rightControlItems.isEmpty {
             leftControlItems = rightControlItems
             rightControlItems.removeAll()
         }
@@ -4226,7 +4229,7 @@ private class SelectedButtonNode: ASDisplayNode {
     
     var theme: PresentationTheme {
         didSet {
-            self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Media Gallery/Check" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
+            self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Navigation/TitleExpand" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
             if let background = self.background {
                 background.image = generateStretchableFilledCircleImage(radius: 21.0 / 2.0, color: self.theme.list.itemCheckColors.fillColor)
             }
@@ -4259,7 +4262,7 @@ private class SelectedButtonNode: ASDisplayNode {
         self.icon.displaysAsynchronously = false
         self.label.displaysAsynchronously = false
         
-        self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Media Gallery/Check" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
+        self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Navigation/TitleExpand" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
         
         self.view.addSubview(self.containerView)
         if let backgroundView = self.backgroundView {

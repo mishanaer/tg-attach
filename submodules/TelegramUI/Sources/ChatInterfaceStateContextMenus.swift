@@ -55,8 +55,9 @@ func canEditMessage(context: AccountContext, limitsConfiguration: EngineConfigur
 
 private func canEditMessage(accountPeerId: EnginePeer.Id, limitsConfiguration: EngineConfiguration.Limits, message: EngineRawMessage, reschedule: Bool = false) -> Bool {
     var hasEditRights = false
-    var unlimitedInterval = reschedule
     let isQuickAttachDemoLocalMessage = message.id.namespace == Namespaces.Message.Local && QuickAttachDemo.isEditableMessage(message)
+    // Demo messages are seeded with fixed timestamps, so they must not fall out of the 48h edit window.
+    var unlimitedInterval = reschedule || isQuickAttachDemoLocalMessage
     
     if message.id.namespace == Namespaces.Message.ScheduledCloud {
         if let peer = message.peers[message.id.peerId], let channel = peer as? TelegramChannel {
