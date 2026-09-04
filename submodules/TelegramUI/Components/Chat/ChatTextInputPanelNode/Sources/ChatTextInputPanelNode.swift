@@ -5776,6 +5776,11 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
 
     public func setQuickAttachActive(_ active: Bool, animated: Bool) {
         self.isQuickAttachActive = active
+        // The quick attach overlay blurs the panel live; a playing video under that blur makes the
+        // render server re-blur every frame and the fan stutters. Detach playback for the hold.
+        for preview in self.quickAttachPreviews {
+            preview.videoNode?.canAttachContent = !active
+        }
         let changes = {
             self.attachmentButtonIcon.alpha = active ? 0.0 : 1.0
             self.attachmentButtonIcon.transform = active ? CGAffineTransform(rotationAngle: .pi * 0.5).scaledBy(x: 0.5, y: 0.5) : .identity
