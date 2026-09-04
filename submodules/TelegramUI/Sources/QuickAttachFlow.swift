@@ -5,6 +5,9 @@ import Display
 import LegacyComponents
 import MediaAssetsContext
 import SwiftSignalKit
+import SSignalKit
+import TelegramCore
+import Postbox
 
 struct QuickAttachMediaItem {
     let asset: PHAsset?
@@ -25,7 +28,8 @@ private enum QuickAttachFanTuning {
 final class QuickAttachRecentPhotosProvider {
     static let shared = QuickAttachRecentPhotosProvider()
 
-    private let mediaAssetsContext = MediaAssetsContext(assetType: .image)
+    // Photos and videos alike, the same set the picker shows.
+    private let mediaAssetsContext = MediaAssetsContext()
     private let disposable = MetaDisposable()
     private var didRequestMediaAccess = false
 
@@ -534,5 +538,44 @@ enum QuickAttachBadge {
         view.addSubview(icon)
 
         return view
+    }
+}
+
+/// A composer attachment dressed as a picker item, so the upstream selection context and its
+/// "selected" grid can hold and lay out media that did not come from the photo library.
+final class QuickAttachPreviewItem: NSObject, TGMediaSelectableItem, TGMediaEditableItem {
+    let identifier: String
+    let media: Media?
+    let image: UIImage
+
+    init(identifier: String, media: Media?, image: UIImage) {
+        self.identifier = identifier
+        self.media = media
+        self.image = image
+        super.init()
+    }
+
+    var uniqueIdentifier: String! {
+        return self.identifier
+    }
+
+    var isVideo: Bool {
+        return (self.media as? TelegramMediaFile)?.isVideo ?? false
+    }
+
+    var originalSize: CGSize {
+        return self.image.size
+    }
+
+    func thumbnailImageSignal() -> SSignal! {
+        return SSignal.single(self.image)
+    }
+
+    func screenImageSignal(_ position: TimeInterval) -> SSignal! {
+        return SSignal.single(self.image)
+    }
+
+    func originalImageSignal(_ position: TimeInterval) -> SSignal! {
+        return SSignal.single(self.image)
     }
 }

@@ -220,6 +220,25 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
     private let style: Style
     
     fileprivate var interaction: MediaPickerInteraction?
+
+    /// Quick attach: the header chevron hands the selection to the composer instead of sending.
+    public var collapseToComposer: (() -> Void)?
+    /// Quick attach: the sheet mirrors the composer, so its send button sends the composer's message.
+    /// (The picker's own export pipeline cannot handle the composer's mirrored items.)
+    public var sendFromComposer: (() -> Void)?
+
+    public var selectedItems: [TGMediaSelectableItem] {
+        return self.interaction?.selectionState?.selectedItems() as? [TGMediaSelectableItem] ?? []
+    }
+
+    public var editingContext: TGMediaEditingContext? {
+        return self.interaction?.editingState
+    }
+
+    /// Jumps to the "selected" grid: how the selection lays out as a message.
+    public func showSelectedMedia() {
+        self.controllerNode.updateDisplayMode(.selected, animated: false)
+    }
     
     private let peer: EnginePeer?
     private let isScheduledMessages: Bool
@@ -1481,6 +1500,11 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             guard let controller = self.controller, !controller.completed else {
                 return
             }
+            if let sendFromComposer = controller.sendFromComposer {
+                sendFromComposer()
+                completion()
+                return
+            }
             controller.dismissAllTooltips()
             
             var parameters = parameters
@@ -2672,7 +2696,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
             let selectedButtonX = usesSwappedControls ? layout.size.width - layout.safeInsets.right - 16.0 - selectedSize.width : 16.0 + 44.0 + 12.0
             self.selectedButtonNode.frame = CGRect(origin: CGPoint(x: selectedButtonX, y: self._hasGlassStyle ? 16.0 : floorToScreenPixels((navigationHeight - selectedSize.height) / 2.0) + 1.0), size: selectedSize)
             
-            let isSelectionButtonVisible = count > 0 && self.controllerNode.currentDisplayMode == .all
+            let isSelectionButtonVisible = count > 0 && self.controllerNode.currentDisplayMode == .all && !usesSwappedControls
             transition.updateAlpha(node: self.selectedButtonNode, alpha: isSelectionButtonVisible ? 1.0 : 0.0)
             transition.updateTransformScale(node: self.selectedButtonNode, scale: isSelectionButtonVisible ? 1.0 : 0.01)
             
@@ -2805,9 +2829,22 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         // With nothing selected the right group is empty, so the left slot keeps the close button;
         // once something is selected the "more" item moves into it and the group's own
         // alpha+blur item transition morphs one icon into the other.
-        if usesSwappedControls && !isBack && !rightControlItems.isEmpty {
-            leftControlItems = rightControlItems
-            rightControlItems.removeAll()
+        if usesSwappedControls {
+            if !isBack && !rightControlItems.isEmpty {
+                leftControlItems = rightControlItems
+                rightControlItems.removeAll()
+            }
+            // The chevron collapses the selection into the composer from the grid and from the
+            // message preview alike.
+            if count > 0 {
+                rightControlItems.append(GlassControlGroupComponent.Item(
+                    id: AnyHashable("collapse"),
+                    content: .icon("Navigation/TitleExpand"),
+                    action: { [weak self] in
+                        self?.collapseToComposer?()
+                    }
+                ))
+            }
         }
         
         if let buttons = self.buttons {
@@ -2901,7 +2938,14 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         self.undoOverlayController?.dismissWithCommitAction()
     }
     
-    public func requestDismiss(completion: @escaping () -> Void) {        
+    public func requestDismiss(completion: @escaping () -> Void) {
+        if let collapseToComposer = self.collapseToComposer {
+            // Quick attach: swiping the sheet away or tapping outside keeps the selection, exactly
+            // like the chevron. Nothing to confirm, nothing gets cancelled.
+            collapseToComposer()
+            completion()
+            return
+        }
         if let selectionState = self.interaction?.selectionState, selectionState.count() > 0 {
             self.isDismissing = true
             
@@ -2933,6 +2977,10 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
     }
     
     public func shouldDismissImmediately() -> Bool {
+        if self.collapseToComposer != nil {
+            // Always route through requestDismiss so an emptied selection empties the composer too.
+            return false
+        }
         if let selectionState = self.interaction?.selectionState, selectionState.count() > 0 {
             return false
         } else {
@@ -4229,7 +4277,7 @@ private class SelectedButtonNode: ASDisplayNode {
     
     var theme: PresentationTheme {
         didSet {
-            self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Navigation/TitleExpand" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
+            self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Media Gallery/Check" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
             if let background = self.background {
                 background.image = generateStretchableFilledCircleImage(radius: 21.0 / 2.0, color: self.theme.list.itemCheckColors.fillColor)
             }
@@ -4262,7 +4310,7 @@ private class SelectedButtonNode: ASDisplayNode {
         self.icon.displaysAsynchronously = false
         self.label.displaysAsynchronously = false
         
-        self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Navigation/TitleExpand" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
+        self.icon.image = generateTintedImage(image: UIImage(bundleImageName: self.glass ? "Media Gallery/Check" : "Media Gallery/SelectedIcon"), color: self.theme.list.itemCheckColors.foregroundColor)
         
         self.view.addSubview(self.containerView)
         if let backgroundView = self.backgroundView {

@@ -5,10 +5,12 @@ import Display
 import AsyncDisplayKit
 import SwiftSignalKit
 import TelegramCore
+import Postbox
 import MobileCoreServices
 import TelegramPresentationData
 import TextFormat
 import AccountContext
+import TelegramUniversalVideoContent
 import TouchDownGesture
 import ImageTransparency
 import ActivityIndicator
@@ -253,6 +255,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     // The AI (compose) button now lives inside the attachment button's glass background (top slot of the
     // capsule), not in the text field. See the 3-line capsule geometry in updateLayout.
     private var attachmentAIButton: (button: HighlightTrackingButton, icon: UIImageView)?
+    private var attachmentPreviewButton: (button: HighlightTrackingButton, icon: UIImageView)?
     private struct ThreeLineHeightCacheEntry { let width: CGFloat; let baseFontSize: CGFloat; let value: CGFloat }
     private var threeLineHeightCache: ThreeLineHeightCacheEntry?
 
@@ -314,6 +317,8 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         let container: UIView
         let imageView: UIImageView
         let removeButton: UIButton
+        let videoNode: UniversalVideoNode?
+        let durationLabel: UILabel?
     }
     private var quickAttachPreviews: [QuickAttachPreview] = []
     private var quickAttachPreviewScrollView: UIScrollView?
@@ -355,6 +360,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     public var sendMessage: () -> Void = { }
     public var removeQuickAttach: (String) -> Void = { _ in }
     public var reorderQuickAttach: ([String]) -> Void = { _ in }
+    public var previewQuickAttach: () -> Void = { }
     public var isQuickAttachGestureEnabled = false {
         didSet {
             self.attachmentButtonContextSource.isGestureEnabled = self.isQuickAttachGestureEnabled
@@ -3155,6 +3161,17 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
                     transition.updateFrame(view: preview.container, frame: self.quickAttachPreviewFrame(index: index))
                 }
                 preview.imageView.frame = preview.container.bounds
+                if let videoNode = preview.videoNode {
+                    videoNode.frame = preview.container.bounds
+                    videoNode.updateLayout(size: preview.container.bounds.size, transition: .immediate)
+                }
+                if let durationLabel = preview.durationLabel, let pill = durationLabel.superview {
+                    durationLabel.sizeToFit()
+                    let pillSize = CGSize(width: durationLabel.bounds.width + 10.0, height: durationLabel.bounds.height + 4.0)
+                    pill.frame = CGRect(origin: CGPoint(x: QuickAttachPreviewLayout.side - pillSize.width - 6.0, y: QuickAttachPreviewLayout.side - pillSize.height - 6.0), size: pillSize)
+                    pill.layer.cornerRadius = pillSize.height * 0.5
+                    durationLabel.frame = CGRect(origin: CGPoint(x: 5.0, y: 2.0), size: durationLabel.bounds.size)
+                }
                 preview.removeButton.frame = CGRect(
                     x: QuickAttachPreviewLayout.side - QuickAttachPreviewLayout.removeSide - QuickAttachPreviewLayout.removeInset,
                     y: QuickAttachPreviewLayout.removeInset,
@@ -3632,6 +3649,13 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             }
         }
 
+        // Eye (message preview) shows whenever attachments sit in the composer; it takes the slot
+        // right above +, with the AI button staying at the top if both are on.
+        let isPreviewButtonVisible = !self.quickAttachPreviews.isEmpty
+        if isPreviewButtonVisible {
+            attachmentPillHeight = max(attachmentPillHeight, isAIButtonVisible ? 120.0 : 80.0)
+        }
+
         let attachmentButtonFrame = CGRect(origin: CGPoint(x: attachmentButtonX, y: textInputFrame.maxY - attachmentPillHeight), size: CGSize(width: 40.0, height: attachmentPillHeight))
         attachmentButtonX += 40.0 + 6.0
         self.attachmentButtonBackground.update(size: attachmentButtonFrame.size, cornerRadius: 40.0 * 0.5, isDark: interfaceState.theme.overallDarkAppearance, tintColor: defaultGlassTintColor, isInteractive: true, transition: ComponentTransition(transition))
@@ -3692,6 +3716,42 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             aiButton.button.removeFromSuperview()
             aiButton.icon.removeFromSuperview()
         }
+
+        let previewButton: (button: HighlightTrackingButton, icon: UIImageView)
+        if let current = self.attachmentPreviewButton {
+            previewButton = current
+        } else {
+            previewButton = (HighlightTrackingButton(), UIImageView())
+            self.attachmentPreviewButton = previewButton
+            previewButton.button.highligthedChanged = { [weak self] highlighted in
+                guard let self, let previewButton = self.attachmentPreviewButton else {
+                    return
+                }
+                if highlighted {
+                    previewButton.icon.alpha = 0.6
+                } else {
+                    let transition: ContainedViewLayoutTransition = .animated(duration: 0.25, curve: .easeInOut)
+                    transition.updateAlpha(layer: previewButton.icon.layer, alpha: 1.0)
+                }
+            }
+            previewButton.button.addTarget(self, action: #selector(self.previewButtonPressed), for: .touchUpInside)
+            previewButton.icon.image = UIImage(bundleImageName: "Peer Info/RefProgram/IntroListEye")?.withRenderingMode(.alwaysTemplate)
+            self.attachmentButtonBackground.contentView.addSubview(previewButton.icon)
+            self.attachmentButtonBackground.contentView.addSubview(previewButton.button)
+        }
+        previewButton.icon.tintColor = interfaceState.theme.chat.inputPanel.panelControlColor
+        let previewSlot = CGRect(origin: CGPoint(x: 0.0, y: attachmentButtonFrame.height - 80.0), size: CGSize(width: 40.0, height: 40.0))
+        transition.updateFrame(view: previewButton.button, frame: previewSlot)
+        if let image = previewButton.icon.image {
+            let transition = ComponentTransition(transition)
+            transition.setPosition(view: previewButton.icon, position: image.size.centered(in: previewSlot).center)
+            previewButton.icon.bounds = CGRect(origin: CGPoint(), size: image.size)
+        }
+        // Collapsed the slot overlaps +, so it must not steal its taps.
+        previewButton.button.isUserInteractionEnabled = isPreviewButtonVisible
+        ComponentTransition(transition).setAlpha(view: previewButton.button, alpha: isPreviewButtonVisible ? 1.0 : 0.0)
+        ComponentTransition(transition).setAlpha(view: previewButton.icon, alpha: isPreviewButtonVisible ? 1.0 : 0.0)
+        ComponentTransition(transition).setScale(view: previewButton.icon, scale: isPreviewButtonVisible ? 1.0 : 0.001)
 
         if let context = self.context, let interfaceState = self.presentationInterfaceState, let editMessageState = interfaceState.editMessageState, let updatedMediaReference = editMessageState.mediaReference {
             let attachmentImageNode: TransformImageNode
@@ -4005,6 +4065,10 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
     
     @objc private func aiButtonPressed() {
         self.interfaceInteraction?.openAICompose()
+    }
+
+    @objc private func previewButtonPressed() {
+        self.previewQuickAttach()
     }
 
     /// The field's glass-background height (text region, excluding any accessory panel) at exactly 3 lines —
@@ -5672,7 +5736,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         let wasEmpty = self.quickAttachPreviews.isEmpty
         let currentBackgroundFrame = self.textInputContainerBackgroundView.convert(self.textInputContainerBackgroundView.bounds, to: coordinateView)
         let accessoryHeight = self.accessoryPanel?.view.view?.bounds.height ?? 0.0
-        let preview = self.makeQuickAttachPreview(identifier: identifier, image: image)
+        let preview = self.makeQuickAttachPreview(identifier: identifier, image: image, media: nil)
         self.quickAttachPreviews.append(preview)
 
         let quickAttachPreviewScrollView: UIScrollView
@@ -5747,7 +5811,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         preview.removeButton.alpha = 1.0
     }
 
-    public func setQuickAttachPreviews(_ items: [(identifier: String, image: UIImage)], removable: Bool, animated: Bool) {
+    public func setQuickAttachPreviews(_ items: [(identifier: String, image: UIImage, media: Media?)], removable: Bool, animated: Bool) {
         for preview in self.quickAttachPreviews {
             preview.container.removeFromSuperview()
         }
@@ -5771,7 +5835,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
             self.installQuickAttachReorderGesture(on: scrollView)
 
             for item in items {
-                let preview = self.makeQuickAttachPreview(identifier: item.identifier, image: item.image)
+                let preview = self.makeQuickAttachPreview(identifier: item.identifier, image: item.image, media: item.media)
                 preview.container.alpha = 1.0
                 preview.removeButton.alpha = removable ? 1.0 : 0.0
                 preview.removeButton.isUserInteractionEnabled = removable
@@ -5834,7 +5898,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         }
     }
 
-    private func makeQuickAttachPreview(identifier: String, image: UIImage) -> QuickAttachPreview {
+    private func makeQuickAttachPreview(identifier: String, image: UIImage, media: Media?) -> QuickAttachPreview {
         let container = UIView(frame: .zero)
         container.alpha = 0.0
         container.isAccessibilityElement = false
@@ -5847,6 +5911,40 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         imageView.layer.cornerCurve = .continuous
         container.addSubview(imageView)
 
+        // Videos loop muted in the tile, the way chat bubbles autoplay, with the grid's duration badge.
+        var videoNode: UniversalVideoNode?
+        var durationLabel: UILabel?
+        if let context = self.context, let file = media as? TelegramMediaFile, file.isVideo {
+            let side = QuickAttachPreviewLayout.side
+            let node = UniversalVideoNode(
+                context: context,
+                postbox: context.account.postbox,
+                audioSession: context.sharedContext.mediaManager.audioSession,
+                manager: context.sharedContext.mediaManager.universalVideoManager,
+                decoration: ChatBubbleVideoDecoration(corners: ImageCorners(radius: 10.0, curve: .continuous), nativeSize: file.dimensions?.cgSize ?? CGSize(width: side, height: side), contentMode: .aspectFill, backgroundColor: .clear),
+                content: NativeVideoContent(id: .message(0, file.fileId), userLocation: .other, fileReference: .standalone(media: file), streamVideo: .none, loopVideo: true, enableSound: false, fetchAutomatically: true, placeholderColor: .clear, storeAfterDownload: nil),
+                priority: .embedded,
+                autoplay: true
+            )
+            node.isUserInteractionEnabled = false
+            node.canAttachContent = true
+            container.addSubview(node.view)
+            videoNode = node
+
+            if let duration = file.duration {
+                let label = UILabel()
+                label.font = Font.semibold(11.0)
+                label.textColor = .white
+                label.text = stringForDuration(Int32(duration))
+                let pill = UIView()
+                pill.backgroundColor = UIColor(white: 0.0, alpha: 0.5)
+                pill.isUserInteractionEnabled = false
+                pill.addSubview(label)
+                container.addSubview(pill)
+                durationLabel = label
+            }
+        }
+
         let removeButton = UIButton(type: .custom)
         removeButton.alpha = 0.0
         removeButton.backgroundColor = UIColor(white: 0.0, alpha: 0.4)
@@ -5858,7 +5956,7 @@ public class ChatTextInputPanelNode: ChatInputPanelNode, ASEditableTextNodeDeleg
         removeButton.addTarget(self, action: #selector(self.removeQuickAttachPreview(_:)), for: .touchUpInside)
         container.addSubview(removeButton)
 
-        return QuickAttachPreview(identifier: identifier, container: container, imageView: imageView, removeButton: removeButton)
+        return QuickAttachPreview(identifier: identifier, container: container, imageView: imageView, removeButton: removeButton, videoNode: videoNode, durationLabel: durationLabel)
     }
 
     @objc private func removeQuickAttachPreview(_ sender: UIButton) {

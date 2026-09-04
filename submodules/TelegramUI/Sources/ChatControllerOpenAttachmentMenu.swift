@@ -48,47 +48,27 @@ extension ChatControllerImpl {
         case gift
     }
 
-    func enqueueQuickAttachAssets(
-        _ assets: [PHAsset],
-        getAnimatedTransitionSource: @escaping (String) -> UIView?,
-        completion: @escaping () -> Void
-    ) {
-        guard !assets.isEmpty, assets.allSatisfy({ $0.mediaType == .image }) else {
-            self.presentQuickAttachPreparationError()
-            return
-        }
-
-        let inputText = self.presentationInterfaceState.interfaceState.effectiveInputState.inputText
-        let settings = self.context.sharedContext.accountManager.transaction { transaction -> GeneratedMediaStoreSettings in
+    /// Runs library assets through the picker's own export pipeline, so strip picks become the same
+    /// media items the attachment sheet produces.
+    func quickAttachMessages(for assets: [PHAsset]) -> Signal<[EnqueueMessage], NoError> {
+        let context = self.context
+        let settings = context.sharedContext.accountManager.transaction { transaction -> GeneratedMediaStoreSettings in
             let entry = transaction.getSharedData(ApplicationSpecificSharedDataKeys.generatedMediaStoreSettings)?.get(GeneratedMediaStoreSettings.self)
             return entry ?? GeneratedMediaStoreSettings.defaultSettings
         }
-
-        let _ = (settings
-        |> deliverOnMainQueue).startStandalone(next: { [weak self] settings in
-            guard let self else {
-                return
-            }
+        return settings
+        |> mapToSignal { settings -> Signal<[EnqueueMessage], NoError> in
             let mediaAssets = assets.compactMap(TGMediaAsset.init(phAsset:))
-            guard mediaAssets.count == assets.count,
-                  let selectionContext = TGMediaSelectionContext(groupingAllowed: true, selectionLimit: Int32(assets.count)) else {
-                self.presentQuickAttachPreparationError()
-                return
+            guard !mediaAssets.isEmpty, let selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: Int32(mediaAssets.count)) else {
+                return .single([])
             }
-            selectionContext.grouping = true
             for mediaAsset in mediaAssets {
                 selectionContext.setItem(mediaAsset, selected: true)
             }
             let editingContext = TGMediaEditingContext()
-
             if UserDefaults.standard.bool(forKey: "TG_photoHighQuality_v0") {
                 editingContext.setHighQualityPhoto(true)
             }
-            editingContext.sendPaidMessageStars = self.presentationInterfaceState.sendPaidMessageStars?.value ?? 0
-            if !inputText.string.isEmpty {
-                editingContext.setForcedCaption(inputText)
-            }
-
             guard let signals = TGMediaAssetsController.resultSignals(
                 for: selectionContext,
                 editingContext: editingContext,
@@ -99,24 +79,104 @@ extension ChatControllerImpl {
                 descriptionGenerator: legacyAssetPickerItemGenerator(),
                 saveEditedPhotos: settings.storeEditedPhotos
             ) else {
-                self.presentQuickAttachPreparationError()
-                return
+                return .single([])
             }
-
-            if !inputText.string.isEmpty {
-                self.clearInputText()
+            return legacyAssetPickerEnqueueMessages(context: context, account: context.account, signals: signals)
+            |> map { $0.map(\.message) }
+            |> `catch` { _ -> Signal<[EnqueueMessage], NoError> in
+                return .single([])
             }
-            self.enqueueMediaMessages(
-                fromGallery: false,
-                signals: signals,
-                silentPosting: false,
-                getAnimatedTransitionSource: getAnimatedTransitionSource,
-                completion: completion
-            )
-        })
+        }
     }
 
-    private func presentQuickAttachPreparationError() {
+    /// Sends the composer's attachments as albums of up to 10, the input text as the first caption.
+    func sendQuickAttachMedia(_ media: [Media]) {
+        guard !media.isEmpty else {
+            return
+        }
+        let inputText = self.presentationInterfaceState.interfaceState.effectiveInputState.inputText
+        var messages: [EnqueueMessage] = []
+        for chunkStart in stride(from: 0, to: media.count, by: 10) {
+            let chunk = media[chunkStart ..< min(chunkStart + 10, media.count)]
+            let groupingKey: Int64? = chunk.count > 1 ? Int64.random(in: 1 ... Int64.max) : nil
+            for item in chunk {
+                var text = ""
+                var attributes: [MessageAttribute] = []
+                if messages.isEmpty, !inputText.string.isEmpty {
+                    text = inputText.string
+                    let entities = generateChatInputTextEntities(inputText)
+                    if !entities.isEmpty {
+                        attributes.append(TextEntitiesMessageAttribute(entities: entities))
+                    }
+                }
+                messages.append(.message(text: text, attributes: attributes, inlineStickers: [:], mediaReference: .standalone(media: item), threadId: nil, replyToMessageId: nil, replyToStoryId: nil, localGroupingKey: groupingKey, correlationId: nil, bubbleUpEmojiOrStickersets: []))
+            }
+        }
+        if !inputText.string.isEmpty {
+            self.clearInputText()
+        }
+        self.sendMessages(self.transformEnqueueMessages(messages), media: true)
+    }
+
+    /// Opens the attachment sheet straight on the "selected" grid: the message preview for whatever
+    /// the composer holds.
+    func presentQuickAttachPreview() {
+        self.quickAttachOpensPreview = true
+        self.presentAttachmentMenu(subject: .default)
+    }
+
+    /// The picker's chevron: the composer becomes exactly the picker's selection, in its order.
+    /// Items that were already in the composer are kept; anything new is exported first.
+    private func collapseQuickAttach(from controller: MediaPickerScreenImpl) {
+        // The sheet's caption is the message text; the composer picks it up.
+        var caption: NSAttributedString?
+        if let signal = controller.editingContext?.forcedCaption() {
+            signal.start(next: { value in
+                caption = value as? NSAttributedString
+            })?.dispose()
+        }
+        if let caption, !caption.string.isEmpty {
+            self.updateChatPresentationInterfaceState(animated: true, interactive: true, { state in
+                return state.updatedInterfaceState { interfaceState in
+                    return interfaceState.withUpdatedEffectiveInputState(ChatTextInputState(inputText: caption))
+                }
+            })
+        }
+
+        let existing = Set(self.chatDisplayNode.quickAttachItems.map(\.identifier))
+        var kept: [String] = []
+        var added: [TGMediaSelectableItem] = []
+        for item in controller.selectedItems {
+            if let preview = item as? QuickAttachPreviewItem {
+                kept.append(preview.identifier)
+            } else if let identifier = item.uniqueIdentifier, existing.contains(identifier) {
+                kept.append(identifier)
+            } else {
+                added.append(item)
+            }
+        }
+        self.chatDisplayNode.setQuickAttachOrder(kept)
+        if !added.isEmpty, let selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: Int32(added.count)) {
+            for item in added {
+                selectionContext.setItem(item, selected: true)
+            }
+            if let signals = TGMediaAssetsController.resultSignals(
+                for: selectionContext,
+                editingContext: controller.editingContext ?? TGMediaEditingContext(),
+                intent: TGMediaAssetsControllerSendMediaIntent,
+                currentItem: nil,
+                storeAssets: true,
+                convertToJpeg: false,
+                descriptionGenerator: legacyAssetPickerItemGenerator(),
+                saveEditedPhotos: false
+            ) {
+                self.chatDisplayNode.appendQuickAttachExport(signals: signals)
+            }
+        }
+        self.attachmentController?.dismiss(animated: true)
+    }
+
+    func presentQuickAttachPreparationError() {
         self.present(
             textAlertController(
                 context: self.context,
@@ -1688,11 +1748,17 @@ extension ChatControllerImpl {
         if let cachedData = self.contentData?.state.peerView?.cachedData as? CachedChannelData, cachedData.flags.contains(.paidMediaAllowed) {
             paidMediaAllowed = true
         }
-        // Editing an album: let the picker itself enforce the remaining room, the way upstream caps
-        // selection in slowmode chats (the context refuses the extra item and reports it).
+        // The sheet opens with the composer's attachments already selected, so its count and its
+        // preview grid describe the message as it stands. Editing an album keeps upstream's cap
+        // mechanism: the context refuses the extra item and reports it (as in slowmode chats).
         var selectionContext: TGMediaSelectionContext?
-        if self.chatDisplayNode.isQuickAttachEditing {
-            selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: Int32(self.chatDisplayNode.quickAttachEditingRoom))
+        if QuickAttachDemo.isEnabled {
+            let items = self.chatDisplayNode.quickAttachItems
+            let limit = self.chatDisplayNode.isQuickAttachEditing ? items.count + self.chatDisplayNode.quickAttachEditingRoom : 100
+            selectionContext = TGMediaSelectionContext(groupingAllowed: false, selectionLimit: Int32(limit))
+            for item in items {
+                selectionContext?.setItem(QuickAttachPreviewItem(identifier: item.identifier, media: item.media, image: item.image), selected: true)
+            }
             selectionContext?.selectionLimitExceeded = {
                 HapticFeedback().error()
             }
@@ -1722,6 +1788,23 @@ extension ChatControllerImpl {
                 controller?.dismiss()
                 self.interfaceInteraction?.openBoostToUnrestrict()
             }
+        }
+        controller.collapseToComposer = { [weak self, weak controller] in
+            guard let self, let controller else {
+                return
+            }
+            self.collapseQuickAttach(from: controller)
+        }
+        controller.sendFromComposer = { [weak self, weak controller] in
+            guard let self, let controller else {
+                return
+            }
+            self.collapseQuickAttach(from: controller)
+            self.chatDisplayNode.sendQuickAttachWhenReady(controller: self)
+        }
+        if self.quickAttachOpensPreview {
+            self.quickAttachOpensPreview = false
+            controller.showSelectedMedia()
         }
         let mediaPickerContext = controller.mediaPickerContext
         controller.openCamera = { [weak self] cameraView in

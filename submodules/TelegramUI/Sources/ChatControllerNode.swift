@@ -1,5 +1,7 @@
 import Foundation
 import UIKit
+import Photos
+import LegacyMediaPickerUI
 import AsyncDisplayKit
 import Postbox
 import SwiftSignalKit
@@ -287,13 +289,19 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
     private var quickAttachOverlay: QuickAttachFlowOverlayView?
     private var quickAttachBackdrop: UIVisualEffectView?
     private var quickAttachButtonVisualRestoreState: (superview: UIView, index: Int, frame: CGRect)?
-    private var quickAttachSelections: [QuickAttachMediaItem] = []
-    // Telegram albums hold at most 10 items. Sending splits into albums on its own (the legacy
-    // sender starts a new group every 10); only editing an existing album has to respect the cap.
+    typealias QuickAttachItem = (identifier: String, media: Media?, image: UIImage)
+    /// Attachments of the message being composed. `media` is nil while a strip pick is still being
+    /// exported through the picker pipeline.
+    private var quickAttachSelections: [QuickAttachItem] = []
+    private var quickAttachSendWhenReady = false
+    private var quickAttachPendingAppends = 0
+    private let quickAttachConversionDisposables = DisposableSet()
+    // Telegram albums hold at most 10 items. Sending splits into albums on its own; only editing an
+    // existing album has to respect the cap.
     private let quickAttachMaxCount = 10
     private var quickAttachEditingMessageId: MessageId?
     private var quickAttachEditingMessageIds: [MessageId] = []
-    private var quickAttachEditingItems: [(identifier: String, media: Media, image: UIImage)] = []
+    private var quickAttachEditingItems: [QuickAttachItem] = []
     private let quickAttachEditPreviewsDisposable = MetaDisposable()
     
     private var inputMediaNodeData: ChatEntityKeyboardInputNode.InputData?
@@ -1061,20 +1069,10 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
                 self.clearQuickAttachSelection(identifier: identifier, animated: true)
             }
             textInputPanelNode.reorderQuickAttach = { [weak self] identifiers in
-                guard let self else {
-                    return
-                }
-                if self.isQuickAttachEditing {
-                    let items = identifiers.compactMap { identifier in self.quickAttachEditingItems.first(where: { $0.identifier == identifier }) }
-                    if items.count == self.quickAttachEditingItems.count {
-                        self.quickAttachEditingItems = items
-                    }
-                } else {
-                    let items = identifiers.compactMap { identifier in self.quickAttachSelections.first(where: { $0.asset?.localIdentifier == identifier }) }
-                    if items.count == self.quickAttachSelections.count {
-                        self.quickAttachSelections = items
-                    }
-                }
+                self?.setQuickAttachOrder(identifiers, refreshPreviews: false)
+            }
+            textInputPanelNode.previewQuickAttach = { [weak self] in
+                self?.controller?.presentQuickAttachPreview()
             }
         }
         self.textInputPanelNode?.updateActivity = { [weak self] in
@@ -1121,6 +1119,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         self.displayVideoUnmuteTipDisposable?.dispose()
         self.inputMediaNodeDataDisposable?.dispose()
         self.quickAttachEditPreviewsDisposable.dispose()
+        self.quickAttachConversionDisposables.dispose()
         self.inlineSearchResultsReadyDisposable?.dispose()
         self.loadMoreSearchResultsDisposable?.dispose()
     }
@@ -4172,7 +4171,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         containerView.addSubview(buttonVisual)
         containerView.addSubview(overlay)
         self.quickAttachOverlay = overlay
-        let selectedAssetIdentifiers = Set(self.quickAttachSelections.compactMap { $0.asset?.localIdentifier })
+        let selectedAssetIdentifiers = Set(self.quickAttachSelections.map(\.identifier))
         let availableItems = QuickAttachRecentPhotosProvider.shared.items.filter { item in
             guard let assetIdentifier = item.asset?.localIdentifier else {
                 return false
@@ -4239,17 +4238,18 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             return
         }
 
-        guard let item = overlay.mediaItem(atSelectedIndex: selectedIndex), item.asset != nil else {
+        guard let item = overlay.mediaItem(atSelectedIndex: selectedIndex), let asset = item.asset else {
             self.cancelQuickAttach()
             return
         }
-        let assetIdentifier = item.asset?.localIdentifier ?? ""
-        if self.quickAttachSelections.contains(where: { $0.asset?.localIdentifier == assetIdentifier }) {
+        let assetIdentifier = asset.localIdentifier
+        if self.quickAttachSelections.contains(where: { $0.identifier == assetIdentifier }) {
             self.cancelQuickAttach()
             return
         }
         self.restoreQuickAttachButtonVisual()
-        self.quickAttachSelections.append(item)
+        self.quickAttachSelections.append((identifier: assetIdentifier, media: nil, image: item.image))
+        self.convertQuickAttachAsset(asset, identifier: assetIdentifier)
         let previousTransition = self.overrideUpdateTextInputHeightTransition
         self.overrideUpdateTextInputHeightTransition = .animated(duration: 0.32, curve: .spring)
         let targetRect = textInputPanelNode.prepareQuickAttachPreview(identifier: assetIdentifier, image: item.image, in: overlay)
@@ -4308,8 +4308,9 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         guard !self.quickAttachSelections.isEmpty else {
             return
         }
+        self.quickAttachSendWhenReady = false
         if let identifier {
-            self.quickAttachSelections.removeAll(where: { $0.asset?.localIdentifier == identifier })
+            self.quickAttachSelections.removeAll(where: { $0.identifier == identifier })
         } else {
             self.quickAttachSelections.removeAll()
         }
@@ -4323,16 +4324,59 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         guard self.chatPresentationInterfaceState.interfaceState.editMessage == nil else {
             return false
         }
-        let assets = self.quickAttachSelections.compactMap(\.asset)
-        guard !assets.isEmpty else {
+        if self.quickAttachPendingAppends > 0 || self.quickAttachSelections.contains(where: { $0.media == nil }) {
+            // Something is still being exported; the send fires as soon as it lands.
+            self.quickAttachSendWhenReady = true
+            return true
+        }
+        guard !self.quickAttachSelections.isEmpty else {
             return false
         }
-        controller.enqueueQuickAttachAssets(assets, getAnimatedTransitionSource: { [weak self] identifier in
-            return self?.textInputPanelNode?.quickAttachPreviewTransitionView(identifier: identifier)
-        }, completion: { [weak self] in
-            self?.clearQuickAttachSelection(animated: true)
-        })
+        controller.sendQuickAttachMedia(self.quickAttachSelections.compactMap(\.media))
+        self.clearQuickAttachSelection(animated: true)
         return true
+    }
+
+    /// The attachment sheet's send button: send the composer's message once its items are in.
+    func sendQuickAttachWhenReady(controller: ChatControllerImpl) {
+        let _ = self.sendQuickAttachSelectionIfNeeded(controller: controller)
+    }
+
+    private func flushQuickAttachSendIfReady() {
+        guard self.quickAttachSendWhenReady, self.quickAttachPendingAppends == 0, !self.quickAttachSelections.contains(where: { $0.media == nil }), let controller = self.controller else {
+            return
+        }
+        self.quickAttachSendWhenReady = false
+        let _ = self.sendQuickAttachSelectionIfNeeded(controller: controller)
+    }
+
+    private func convertQuickAttachAsset(_ asset: PHAsset, identifier: String) {
+        guard let controller = self.controller else {
+            return
+        }
+        let disposable = MetaDisposable()
+        self.quickAttachConversionDisposables.add(disposable)
+        disposable.set((controller.quickAttachMessages(for: [asset])
+        |> deliverOnMainQueue).start(next: { [weak self] messages in
+            guard let self, let index = self.quickAttachSelections.firstIndex(where: { $0.identifier == identifier }) else {
+                return
+            }
+            var media: Media?
+            if let message = messages.first, case let .message(_, _, _, mediaReference, _, _, _, _, _, _) = message {
+                media = mediaReference?.media
+            }
+            guard let media else {
+                self.clearQuickAttachSelection(identifier: identifier, animated: true)
+                self.controller?.presentQuickAttachPreparationError()
+                return
+            }
+            self.quickAttachSelections[index].media = media
+            if let file = media as? TelegramMediaFile, file.isVideo {
+                // The strip flew in a still; now that the video is exported the tile can play it.
+                self.refreshQuickAttachPreviews(animated: false)
+            }
+            self.flushQuickAttachSendIfReady()
+        }))
     }
 
     private func canQuickAttachPhotos() -> Bool {
@@ -4359,12 +4403,39 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         return max(0, self.quickAttachMaxCount - self.quickAttachEditingItems.count)
     }
 
-    private func quickAttachEditingItemSignal(
+    /// What the composer row shows: the album being edited, or the message being composed.
+    var quickAttachItems: [QuickAttachItem] {
+        return self.isQuickAttachEditing ? self.quickAttachEditingItems : self.quickAttachSelections
+    }
+
+    private func refreshQuickAttachPreviews(animated: Bool) {
+        self.textInputPanelNode?.setQuickAttachPreviews(self.quickAttachItems.map { ($0.identifier, $0.image, $0.media) }, removable: true, animated: animated)
+    }
+
+    /// Keeps only `identifiers`, in that order. The composer's drag reorder already has the row in
+    /// place and skips the redraw; the picker collapsing its selection into the composer redraws.
+    func setQuickAttachOrder(_ identifiers: [String], refreshPreviews: Bool = true) {
+        if self.isQuickAttachEditing {
+            self.quickAttachEditingItems = identifiers.compactMap { identifier in self.quickAttachEditingItems.first(where: { $0.identifier == identifier }) }
+            if self.quickAttachEditingItems.isEmpty {
+                self.interfaceInteraction?.setupEditMessage(nil, { _ in })
+                return
+            }
+        } else {
+            self.quickAttachSelections = identifiers.compactMap { identifier in self.quickAttachSelections.first(where: { $0.identifier == identifier }) }
+        }
+        if refreshPreviews {
+            self.refreshQuickAttachPreviews(animated: true)
+        }
+    }
+
+    private func quickAttachItemSignal(
         identifier: String,
         mediaReference: AnyMediaReference,
         peerId: PeerId
-    ) -> Signal<(identifier: String, media: Media, image: UIImage), NoError>? {
-        let boundingSize = CGSize(width: 86.0, height: 86.0)
+    ) -> Signal<QuickAttachItem, NoError>? {
+        // Large enough for the preview grid, keeping the media's own aspect ratio.
+        let boundingSize = CGSize(width: 320.0, height: 320.0)
         var imageDimensions: CGSize?
         var imageSignal: Signal<(TransformImageArguments) -> DrawingContext?, NoError>?
 
@@ -4398,14 +4469,15 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         guard let imageDimensions, let imageSignal else {
             return nil
         }
+        let fittedSize = imageDimensions.aspectFitted(boundingSize)
         let arguments = TransformImageArguments(
             corners: ImageCorners(),
-            imageSize: imageDimensions.aspectFilled(boundingSize),
-            boundingSize: boundingSize,
+            imageSize: fittedSize,
+            boundingSize: fittedSize,
             intrinsicInsets: UIEdgeInsets()
         )
         return imageSignal
-        |> mapToSignal { transform -> Signal<(identifier: String, media: Media, image: UIImage), NoError> in
+        |> mapToSignal { transform -> Signal<QuickAttachItem, NoError> in
             guard let image = transform(arguments)?.generateImage() else {
                 return .complete()
             }
@@ -4428,7 +4500,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             return nil
         }
         let previewSignals = mediaReferences.compactMap { item in
-            return self.quickAttachEditingItemSignal(
+            return self.quickAttachItemSignal(
                 identifier: item.identifier,
                 mediaReference: item.mediaReference,
                 peerId: messageId.peerId
@@ -4451,42 +4523,83 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
             }
             self.quickAttachEditingItems = items
             textInputPanelNode.customSendIsDisabled = items.isEmpty
-            textInputPanelNode.setQuickAttachPreviews(items.map { ($0.identifier, $0.image) }, removable: true, animated: true)
+            textInputPanelNode.setQuickAttachPreviews(items.map { ($0.identifier, $0.image, $0.media) }, removable: true, animated: true)
         }))
     }
 
-    func appendQuickAttachEditingMessages(_ messages: [EnqueueMessage]) {
-        guard let messageId = self.quickAttachEditingMessageId, let textInputPanelNode = self.textInputPanelNode else {
+    /// Exports picker items (library assets, camera captures) and appends the result to the composer.
+    func appendQuickAttachExport(signals: [Any]) {
+        self.quickAttachPendingAppends += 1
+        let disposable = MetaDisposable()
+        self.quickAttachConversionDisposables.add(disposable)
+        disposable.set((legacyAssetPickerEnqueueMessages(context: self.context, account: self.context.account, signals: signals)
+        |> deliverOnMainQueue).start(next: { [weak self] items in
+            guard let self else {
+                return
+            }
+            self.appendQuickAttachMessages(items.map(\.message))
+            self.quickAttachPendingAppends -= 1
+            self.flushQuickAttachSendIfReady()
+        }, error: { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.quickAttachPendingAppends -= 1
+            self.flushQuickAttachSendIfReady()
+        }))
+    }
+
+    /// Adds the picker's export result to the composer: to the album being edited (within its room)
+    /// or to the message being composed.
+    func appendQuickAttachMessages(_ messages: [EnqueueMessage]) {
+        guard let textInputPanelNode = self.textInputPanelNode else {
             return
         }
-        let mediaReferences: [AnyMediaReference] = messages.compactMap { message in
+        var mediaReferences: [AnyMediaReference] = messages.compactMap { message in
             guard case let .message(_, _, _, mediaReference, _, _, _, _, _, _) = message else {
                 return nil
             }
             return mediaReference
         }
-        let room = self.quickAttachMaxCount - self.quickAttachEditingItems.count
-        guard room > 0 else {
-            return
+        let isEditing = self.isQuickAttachEditing
+        if isEditing {
+            let room = self.quickAttachEditingRoom
+            guard room > 0 else {
+                return
+            }
+            mediaReferences = Array(mediaReferences.prefix(room))
         }
-        let previewSignals = mediaReferences.prefix(room).compactMap { mediaReference in
-            return self.quickAttachEditingItemSignal(
-                identifier: "edit:new:\(UUID().uuidString)",
+        let peerId = self.chatLocation.peerId ?? self.context.account.peerId
+        let previewSignals = mediaReferences.compactMap { mediaReference in
+            return self.quickAttachItemSignal(
+                identifier: "attach:\(UUID().uuidString)",
                 mediaReference: mediaReference,
-                peerId: messageId.peerId
+                peerId: peerId
             )
         }
         guard !previewSignals.isEmpty else {
             return
         }
-        self.quickAttachEditPreviewsDisposable.set((combineLatest(previewSignals)
+        let editingMessageId = self.quickAttachEditingMessageId
+        self.quickAttachPendingAppends += 1
+        let disposable = MetaDisposable()
+        self.quickAttachConversionDisposables.add(disposable)
+        disposable.set((combineLatest(previewSignals)
         |> deliverOnMainQueue).start(next: { [weak self, weak textInputPanelNode] items in
-            guard let self, let textInputPanelNode, self.quickAttachEditingMessageId == messageId else {
+            guard let self else {
                 return
             }
-            self.quickAttachEditingItems.append(contentsOf: items)
-            textInputPanelNode.customSendIsDisabled = false
-            textInputPanelNode.setQuickAttachPreviews(self.quickAttachEditingItems.map { ($0.identifier, $0.image) }, removable: true, animated: true)
+            self.quickAttachPendingAppends -= 1
+            if let textInputPanelNode, self.quickAttachEditingMessageId == editingMessageId {
+                if isEditing {
+                    self.quickAttachEditingItems.append(contentsOf: items)
+                    textInputPanelNode.customSendIsDisabled = false
+                } else {
+                    self.quickAttachSelections.append(contentsOf: items)
+                }
+                self.refreshQuickAttachPreviews(animated: true)
+            }
+            self.flushQuickAttachSendIfReady()
         }))
     }
 
@@ -4516,7 +4629,7 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         return QuickAttachDemo.editLocalMediaMessages(
             postbox: self.context.account.postbox,
             messageIds: self.quickAttachEditingMessageIds,
-            media: self.quickAttachEditingItems.map { $0.media },
+            media: self.quickAttachEditingItems.compactMap(\.media),
             text: text,
             entities: entities,
             richText: richText
@@ -4531,12 +4644,9 @@ class ChatControllerNode: ASDisplayNode, ASScrollViewDelegate {
         self.quickAttachEditingMessageIds.removeAll()
         self.quickAttachEditingItems.removeAll()
         self.quickAttachEditPreviewsDisposable.set(nil)
-        let previews = self.quickAttachSelections.enumerated().map { index, item in
-            return (identifier: item.asset?.localIdentifier ?? "selection:\(index)", image: item.image)
-        }
         self.textInputPanelNode?.setQuickAttachEditingMedia(false)
         self.textInputPanelNode?.customSendIsDisabled = false
-        self.textInputPanelNode?.setQuickAttachPreviews(previews, removable: true, animated: animated)
+        self.refreshQuickAttachPreviews(animated: animated)
     }
     
     func currentInputPanelFrame() -> CGRect? {

@@ -544,6 +544,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     var chatLocationContextHolder: Atomic<ChatLocationContextHolder?>
     
     weak var attachmentController: AttachmentController?
+    var quickAttachOpensPreview = false
     
     weak var currentImportMessageTooltip: UndoOverlayController?
     
@@ -9072,7 +9073,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 originalMediaReference: originalMediaReference
             )
             |> deliverOnMainQueue).startStrict(next: { [weak self] items in
-                self?.chatDisplayNode.appendQuickAttachEditingMessages(items.map(\.message))
+                self?.chatDisplayNode.appendQuickAttachMessages(items.map(\.message))
                 completion()
             }))
             return

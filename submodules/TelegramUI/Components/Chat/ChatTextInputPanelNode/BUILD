@@ -53,6 +53,7 @@ swift_library(
         "//submodules/TelegramUI/Components/TextNodeWithEntities",
         "//submodules/Utils/DeviceModel",
         "//submodules/PhotoResources",
+        "//submodules/TelegramUniversalVideoContent",
         "//submodules/TelegramUI/Components/Chat/ChatTextInputSlowmodePlaceholderNode",
         "//submodules/TelegramUI/Components/Chat/ChatTextInputActionButtonsNode",
         "//submodules/TelegramUI/Components/Chat/ChatTextInputAudioRecordingTimeNode",
