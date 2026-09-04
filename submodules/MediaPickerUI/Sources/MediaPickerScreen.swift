@@ -223,6 +223,7 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
 
     /// Quick attach: the header chevron hands the selection to the composer instead of sending.
     public var collapseToComposer: (() -> Void)?
+    private let quickAttachMorePlayOnce = ActionSlot<Void>()
     /// Quick attach: the sheet mirrors the composer, so its send button sends the composer's message.
     /// (The picker's own export pipeline cannot handle the composer's mirrored items.)
     public var sendFromComposer: (() -> Void)?
@@ -2830,8 +2831,39 @@ public final class MediaPickerScreenImpl: ViewController, MediaPickerScreen, Att
         // once something is selected the "more" item moves into it and the group's own
         // alpha+blur item transition morphs one icon into the other.
         if usesSwappedControls {
-            if !isBack && !rightControlItems.isEmpty {
-                leftControlItems = rightControlItems
+            if !isBack {
+                // One stable left item that cross-rotates close <-> more the way the composer's
+                // paperclip turns into cancel; the dots play their own animation as they arrive.
+                let showsMore = rightControlItems.contains(where: { $0.id == AnyHashable("more") })
+                rightControlItems.removeAll(where: { $0.id == AnyHashable("more") })
+                let playMore = self.quickAttachMorePlayOnce
+                leftControlItems = [GlassControlGroupComponent.Item(
+                    id: AnyHashable("leftControl"),
+                    content: .customIcon(
+                        id: AnyHashable("leftControl"),
+                        component: AnyComponent(RotatingIconSwapComponent(
+                            firstIcon: "Navigation/Close",
+                            secondAnimation: "anim_morewide",
+                            showsSecond: showsMore,
+                            color: self.presentationData.theme.chat.inputPanel.panelControlColor,
+                            playSecond: playMore
+                        )),
+                        insets: UIEdgeInsets()
+                    ),
+                    action: { [weak self] in
+                        guard let self else {
+                            return
+                        }
+                        if showsMore {
+                            playMore.invoke(Void())
+                            if let controlsView = self.buttons?.view as? GlassControlPanelComponent.View, let sourceView = controlsView.leftItemView?.itemView(id: AnyHashable("leftControl")) {
+                                self.searchOrMorePressed(view: sourceView, gesture: nil)
+                            }
+                        } else {
+                            self.cancelPressed()
+                        }
+                    }
+                )] + rightControlItems
                 rightControlItems.removeAll()
             }
             // The chevron collapses the selection into the composer from the grid and from the
@@ -4381,5 +4413,129 @@ private class SelectedButtonNode: ASDisplayNode {
         self.button.frame = CGRect(origin: .zero, size: size)
 
         return size
+    }
+}
+
+/// Two icons in one slot that trade places with the composer paperclip's rotate-and-scale spring
+/// (ChatTextInputPanelNode.setQuickAttachActive). The second side is a Lottie so it can animate in.
+private final class RotatingIconSwapComponent: Component {
+    let firstIcon: String
+    let secondAnimation: String
+    let showsSecond: Bool
+    let color: UIColor
+    let playSecond: ActionSlot<Void>
+
+    init(firstIcon: String, secondAnimation: String, showsSecond: Bool, color: UIColor, playSecond: ActionSlot<Void>) {
+        self.firstIcon = firstIcon
+        self.secondAnimation = secondAnimation
+        self.showsSecond = showsSecond
+        self.color = color
+        self.playSecond = playSecond
+    }
+
+    static func ==(lhs: RotatingIconSwapComponent, rhs: RotatingIconSwapComponent) -> Bool {
+        if lhs.firstIcon != rhs.firstIcon {
+            return false
+        }
+        if lhs.secondAnimation != rhs.secondAnimation {
+            return false
+        }
+        if lhs.showsSecond != rhs.showsSecond {
+            return false
+        }
+        if lhs.color != rhs.color {
+            return false
+        }
+        if lhs.playSecond !== rhs.playSecond {
+            return false
+        }
+        return true
+    }
+
+    final class View: UIView {
+        private let firstView = UIImageView()
+        private let second = ComponentView<Empty>()
+
+        private var component: RotatingIconSwapComponent?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+
+            self.isUserInteractionEnabled = false
+            self.addSubview(self.firstView)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
+        func update(component: RotatingIconSwapComponent, availableSize: CGSize, transition: ComponentTransition) -> CGSize {
+            let previousComponent = self.component
+            self.component = component
+
+            let size = CGSize(width: 32.0, height: 32.0)
+
+            if previousComponent?.firstIcon != component.firstIcon {
+                self.firstView.image = UIImage(bundleImageName: component.firstIcon)?.withRenderingMode(.alwaysTemplate)
+            }
+            self.firstView.tintColor = component.color
+            self.firstView.bounds = CGRect(origin: CGPoint(), size: self.firstView.image?.size ?? size)
+            self.firstView.center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+
+            let secondSize = self.second.update(
+                transition: .immediate,
+                component: AnyComponent(LottieComponent(
+                    content: LottieComponent.AppBundleContent(name: component.secondAnimation),
+                    color: component.color,
+                    size: size,
+                    playOnce: component.playSecond
+                )),
+                environment: {},
+                containerSize: size
+            )
+            guard let secondView = self.second.view else {
+                return size
+            }
+            if secondView.superview == nil {
+                secondView.isUserInteractionEnabled = false
+                self.addSubview(secondView)
+            }
+            secondView.bounds = CGRect(origin: CGPoint(), size: secondSize)
+            secondView.center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+
+            if previousComponent?.showsSecond != component.showsSecond {
+                let showsSecond = component.showsSecond
+                let firstView = self.firstView
+                let apply: () -> Void = {
+                    firstView.alpha = showsSecond ? 0.0 : 1.0
+                    firstView.transform = showsSecond ? CGAffineTransform(rotationAngle: .pi * 0.5).scaledBy(x: 0.5, y: 0.5) : .identity
+                    secondView.alpha = showsSecond ? 1.0 : 0.0
+                    secondView.transform = showsSecond ? .identity : CGAffineTransform(rotationAngle: -.pi * 0.5).scaledBy(x: 0.5, y: 0.5)
+                }
+
+                self.firstView.layer.removeAllAnimations()
+                secondView.layer.removeAllAnimations()
+                // The glass group hands its content a non-animated transition; the swap animates on its
+                // own whenever the state flips after the first layout.
+                if previousComponent != nil {
+                    UIView.animate(withDuration: 0.3, delay: 0.0, usingSpringWithDamping: 0.82, initialSpringVelocity: 0.0, options: [.beginFromCurrentState, .allowUserInteraction], animations: apply)
+                    if showsSecond {
+                        component.playSecond.invoke(Void())
+                    }
+                } else {
+                    apply()
+                }
+            }
+
+            return size
+        }
+    }
+
+    func makeView() -> View {
+        return View(frame: CGRect())
+    }
+
+    func update(view: View, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: ComponentTransition) -> CGSize {
+        return view.update(component: self, availableSize: availableSize, transition: transition)
     }
 }
